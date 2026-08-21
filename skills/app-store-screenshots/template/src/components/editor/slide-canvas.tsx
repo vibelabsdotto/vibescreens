@@ -7,6 +7,7 @@ import type {
   Device,
   ElementId,
   ElementTransform,
+  ImageElement,
   Orientation,
   SelectedElement,
   Slide,
@@ -22,3 +23,20 @@ import {
   WATCH_RATIO,
   desktopW,
   carPlayW,
+  ipadW,
+  phoneW,
+  phoneWSmall,
+  tabletLW,
+  tabletPW,
+} from "@/lib/constants";
+import { imageElementKey, isImageElementId, toImageElementId, toTextElementId } from "@/lib/elements";
+import { img } from "@/lib/image-cache";
+import { pickText, resolveScreenshot } from "@/lib/locale";
+import {
+  AndroidPhone,
+  AndroidTabletL,
+  AndroidTabletP,
+  IPad,
+  Phone,
+} from "./device-frames";
+import { ImageElementCanvas } from "./image-element-canvas";
