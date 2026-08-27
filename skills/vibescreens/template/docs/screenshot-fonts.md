@@ -16,7 +16,7 @@ Use the **Font** menu in the toolbar to change the typeface used on the screensh
 2. Choose a licensed WOFF2, WOFF, TTF, or OTF file. It is copied to `public/fonts/imported/` and used immediately in previews and exports.
 3. You can also add a WOFF2, WOFF, TTF, or OTF file manually as `public/fonts/imported/custom-screenshot-font.<extension>`, choose **Import a font**, and the editor uses it when no imported file has been selected.
 
-The selected font is saved in `app-store-screenshots.json` as `fontId`.
+The selected font is saved in `vibescreens.json` as `fontId`.
 
 ## Relevant code
 

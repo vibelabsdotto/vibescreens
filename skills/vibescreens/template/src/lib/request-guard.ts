@@ -4,8 +4,8 @@
  * THE EXPOSURE
  * ------------
  * `POST /api/upload` writes a file into `public/screenshots/uploaded/`, and
- * `POST /api/project` OVERWRITES `app-store-screenshots.json`, which is
- * normally git-tracked. Neither had an origin check.
+ * `POST /api/project` OVERWRITES `vibescreens.json`, which is normally
+ * git-tracked. Neither had an origin check.
  *
  * While the dev server is running, any page in any other tab can send a
  * cross-origin POST. If that request is a CORS-"simple" request — which

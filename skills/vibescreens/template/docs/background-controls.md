@@ -6,7 +6,7 @@ Each slide has its own **Background** control in the right-hand Screen settings 
 - **Theme alternate** uses the second background color from that theme. This is the per-slide light/dark variation.
 - **Custom color** opens a color picker and hex input. The color only applies to the selected slide and overrides the theme background there.
 
-Switching back to either theme option removes the custom override. Background choices are saved with the slide in `app-store-screenshots.json` and included in exports.
+Switching back to either theme option removes the custom override. Background choices are saved with the slide in `vibescreens.json` and included in exports.
 
 ## Relevant code
 

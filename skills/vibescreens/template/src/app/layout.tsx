@@ -5,8 +5,8 @@ import "./globals.css";
 const font = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "App Store Screenshots",
-  description: "Design and export App Store + Google Play screenshots.",
+  title: "VibeScreens",
+  description: "Design and export App Store, Microsoft Store, and Google Play screenshots with VibeScreens.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

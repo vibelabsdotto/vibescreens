@@ -1,6 +1,6 @@
-# App Store, Microsoft Store & Google Play Screenshots Generator
+# VibeScreens
 
-A skill for AI coding agents that scaffolds a production-ready Next.js editor for App Store, Microsoft Store, and Google Play marketing screenshots. It gives you a connected canvas, real device frames, inspector controls, persistent project state, and one-click export bundles at store-ready sizes.
+VibeScreens is a skill for AI coding agents that scaffolds a production-ready Next.js editor for App Store, Microsoft Store, and Google Play marketing screenshots. It includes a connected canvas, real device frames, inspector controls, persistent project state, and one-click export bundles at store-ready sizes.
 
 ![Current connected-canvas editor showing a Bloom screenshot deck](example.png)
 
@@ -12,7 +12,7 @@ Example screenshots generated with this skill were accepted for [Bloom Coffee Sh
 - Turns raw app captures into ad-style slides with big readable copy
 - Lets phones, captions, and decorative elements span adjacent screenshots on one connected canvas
 - Keeps older projects safe with isolated-screen export mode until you opt into connected crops
-- Saves every deck to `app-store-screenshots.json`, so the project is git-trackable and resumable
+- Saves every deck to `vibescreens.json`, so the project is git-trackable and resumable
 - Uploads picked screenshots into `public/screenshots/uploaded/<hash>.png`
 - Supports iOS, iPad, Android phone, Android tablet, macOS, Windows, and Play Store feature graphic decks
 - Exports PNG bundles at common App Store, Microsoft Store, and Google Play sizes
@@ -36,19 +36,19 @@ Tip: when capturing source iPhone screenshots, the 6.1-inch simulator is usually
 ### Using npx skills
 
 ```bash
-npx skills add ParthJadhav/app-store-screenshots
+npx skills add vibelabsdotto/vibescreens
 ```
 
 Install globally:
 
 ```bash
-npx skills add ParthJadhav/app-store-screenshots -g
+npx skills add vibelabsdotto/vibescreens -g
 ```
 
 Install for a specific agent:
 
 ```bash
-npx skills add ParthJadhav/app-store-screenshots -a claude-code
+npx skills add vibelabsdotto/vibescreens -a claude-code
 ```
 
 This works with Claude Code, Cursor, Windsurf, OpenCode, Codex, and other agents supported by [`skills`](https://github.com/vercel-labs/skills).
@@ -56,7 +56,9 @@ This works with Claude Code, Cursor, Windsurf, OpenCode, Codex, and other agents
 ### Manual install
 
 ```bash
-git clone https://github.com/ParthJadhav/app-store-screenshots ~/.claude/skills/app-store-screenshots
+git clone https://github.com/vibelabsdotto/vibescreens.git
+mkdir -p ~/.claude/skills
+cp -R vibescreens/skills/vibescreens ~/.claude/skills/vibescreens
 ```
 
 ## Usage
@@ -118,7 +120,7 @@ project/
 │           ├── tablet-7/portrait/{locale}/01.png
 │           ├── tablet-10/landscape/{locale}/01.png
 │           └── feature-graphic/{locale}/01.png
-├── app-store-screenshots.json
+├── vibescreens.json
 ├── src/app/
 │   ├── layout.tsx
 │   └── page.tsx
@@ -139,7 +141,7 @@ project/
     └── types.ts
 ```
 
-The template README inside `skills/app-store-screenshots/template/README.md` documents the editor internals in more detail.
+The template README inside `skills/vibescreens/template/README.md` documents the editor internals in more detail.
 
 ## Editor Workflow
 
@@ -150,7 +152,7 @@ The template README inside `skills/app-store-screenshots/template/README.md` doc
 5. Choose Connected or Isolated mode depending on whether elements should cross screen boundaries.
 6. Click **Export bundle** to download store-ready PNGs.
 
-Uploaded files are saved under `public/screenshots/uploaded/`, and the canonical deck state is saved in `app-store-screenshots.json`. Commit both to make the deck reproducible after a fresh clone.
+Uploaded files are saved under `public/screenshots/uploaded/`, and the canonical deck state is saved in `vibescreens.json`. Commit both to make the deck reproducible after a fresh clone.
 
 ## Export Sizes
 
@@ -178,7 +180,8 @@ Screenshots are designed at the largest size for each platform and scaled down f
 
 ## Project State
 
-- `app-store-screenshots.json` is the source of truth for app name, active platform, active device, locales, theme, connected-canvas mode, slides, screenshot paths, and transforms.
+- `vibescreens.json` is the source of truth for app name, active platform, active device, locales, theme, connected-canvas mode, slides, screenshot paths, and transforms.
+- Existing projects that only have `app-store-screenshots.json` remain compatible. The editor reads the legacy file when `vibescreens.json` is absent, then writes future saves to `vibescreens.json`.
 - Runtime uploads are written to `public/screenshots/uploaded/<hash>.png`.
 - The editor reads `localStorage` first for fast paint, then reconciles with the project file.
 - Older project files are migrated to schema v2 on load while keeping legacy decks isolated unless connected mode was already enabled.
@@ -215,6 +218,10 @@ Screenshots are designed at the largest size for each platform and scaled down f
 ## Contributing
 
 Contributions are welcome, especially around export reliability, screenshot design guidance, migrations, and cross-agent compatibility. Start with `CONTRIBUTING.md`.
+
+## Attribution
+
+VibeScreens was forked from [ParthJadhav/app-store-screenshots](https://github.com/ParthJadhav/app-store-screenshots), created by [Parth Jadhav](https://github.com/ParthJadhav). The original MIT copyright notice remains in `LICENSE`.
 
 ## License
 

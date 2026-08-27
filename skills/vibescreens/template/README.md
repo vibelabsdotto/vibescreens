@@ -1,6 +1,6 @@
-# Store Screenshots — Editor Template
+# VibeScreens editor template
 
-A pre-built Next.js + ShadCN editor for generating App Store, Microsoft Store, and Google Play screenshots. Scaffolded by the `app-store-screenshots` skill.
+A pre-built Next.js + ShadCN editor for generating App Store, Microsoft Store, and Google Play screenshots. Scaffolded by the `vibescreens` skill.
 
 ## Quick start
 
@@ -11,6 +11,7 @@ bun dev       # http://localhost:3000
 
 ## What's inside
 
+- **Project state** lives in `vibescreens.json`. The editor reads the legacy `app-store-screenshots.json` when the new file is absent, then writes future saves to `vibescreens.json`.
 - **Connected canvas editor** (`src/components/editor/`) — every screen sits on one horizontal canvas, so phones, captions, and other elements can be dragged across screen boundaries and exported as split crops when Connected mode is enabled.
 - **Screen controls** — drag-to-reorder screens, click-to-edit text, screenshot drop targets, per-screen layout switcher, dark/light toggle.
 - **Image overlays** — add PNG/JPG elements, then upload or replace them, drag, resize, rotate, layer, crop, and apply a one-sided edge fade. See [Image Elements](docs/image-elements.md).

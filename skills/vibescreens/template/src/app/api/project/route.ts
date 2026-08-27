@@ -5,15 +5,26 @@ import { rejectCrossSiteWrite } from "@/lib/request-guard";
 
 export const dynamic = "force-dynamic";
 
-const PROJECT_FILE = "app-store-screenshots.json";
+const PROJECT_FILE = "vibescreens.json";
+const LEGACY_PROJECT_FILE = "app-store-screenshots.json";
 
-function filePath() {
-  return path.join(process.cwd(), PROJECT_FILE);
+function filePath(fileName = PROJECT_FILE) {
+  return path.join(process.cwd(), fileName);
+}
+
+async function readProjectFile() {
+  try {
+    return await fs.readFile(filePath(), "utf8");
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") throw e;
+    return fs.readFile(filePath(LEGACY_PROJECT_FILE), "utf8");
+  }
 }
 
 export async function GET() {
   try {
-    const raw = await fs.readFile(filePath(), "utf8");
+    const raw = await readProjectFile();
     const parsed = JSON.parse(raw);
     return NextResponse.json({ ok: true, state: parsed });
   } catch (e) {

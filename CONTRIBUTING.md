@@ -1,11 +1,11 @@
 # Contributing
 
-Thanks for contributing to `app-store-screenshots`.
+Thanks for contributing to VibeScreens.
 
 This repository is intentionally small, but changes still affect real agent behavior. Most contributions here change either:
 
 - `README.md`: how humans discover and install the skill
-- `skills/app-store-screenshots/SKILL.md`: how coding agents actually behave
+- `skills/vibescreens/SKILL.md`: how coding agents actually behave
 
 ## What Makes a Good Contribution
 
@@ -34,7 +34,7 @@ Usually not a fit:
 ## Before Opening a PR
 
 1. Check open PRs to avoid overlapping work.
-2. Read both `README.md` and `skills/app-store-screenshots/SKILL.md`.
+2. Read both `README.md` and `skills/vibescreens/SKILL.md`.
 3. Keep user-facing docs and skill behavior aligned when applicable.
 
 ## Testing Changes

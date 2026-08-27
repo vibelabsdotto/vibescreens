@@ -47,9 +47,14 @@ Thumbs.db
 !.vscode/extensions.json
 !.vscode/settings.json
 
+# Agent workspaces
+.hermes/
+.agents/
+skills-lock.json
+
 # Skill template user assets
-skills/app-store-screenshots/template/public/app-icon.png
-skills/app-store-screenshots/template/public/screenshots/**/*.png
+skills/vibescreens/template/public/app-icon.png
+skills/vibescreens/template/public/screenshots/**/*.png
 
 # Temporary files
 *.tmp
