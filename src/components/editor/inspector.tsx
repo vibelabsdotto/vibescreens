@@ -37,6 +37,8 @@ import {
   toTextElementId,
 } from "@/lib/elements";
 import { pickText, writeLocalized } from "@/lib/locale";
+import { img as cachedImage } from "@/lib/image-cache";
+import type { ProjectDocumentV3 } from "@/lib/project-schema";
 import {
   cleanTypography,
   FONT_SCALE_MAX,
@@ -69,6 +71,8 @@ type Props = {
   selectedElementId: ElementId | null;
   onChange: (patch: Partial<Slide>) => void;
   onSelectElement: (id: ElementId | null) => void;
+  /** Adopts the server project returned by an asset upload (revision bump). */
+  onUploadReconciled: (project: ProjectDocumentV3) => void;
 };
 
 const ELEMENT_LABEL: Record<BuiltInElementId, string> = {
@@ -86,6 +90,7 @@ export function Inspector({
   selectedElementId,
   onChange,
   onSelectElement,
+  onUploadReconciled,
 }: Props) {
   const isFeatureGraphic = device === "feature-graphic" || slide.layout === "feature-graphic";
   const isNoDevice = slide.layout === "no-device";
@@ -191,6 +196,7 @@ export function Inspector({
               value={slide.screenshot}
               locale={locale}
               onChange={(v) => onChange({ screenshot: v })}
+              onUploaded={onUploadReconciled}
             />
           </div>
         )}
@@ -203,6 +209,7 @@ export function Inspector({
               value={slide.screenshotSecondary || ""}
               locale={locale}
               onChange={(v) => onChange({ screenshotSecondary: v })}
+              onUploaded={onUploadReconciled}
             />
           </div>
         )}
@@ -216,6 +223,7 @@ export function Inspector({
             selectedElementId={selectedElementId}
             onChange={onChange}
             onSelectElement={onSelectElement}
+            onUploadReconciled={onUploadReconciled}
           />
         )}
 
@@ -237,6 +245,7 @@ function ElementTransformControls({
   selectedElementId,
   onChange,
   onSelectElement,
+  onUploadReconciled,
 }: {
   slide: Slide;
   device: Device;
@@ -245,6 +254,7 @@ function ElementTransformControls({
   selectedElementId: ElementId | null;
   onChange: (patch: Partial<Slide>) => void;
   onSelectElement: (id: ElementId | null) => void;
+  onUploadReconciled: (project: ProjectDocumentV3) => void;
 }) {
   const present: ElementId[] = ["caption"];
   if (slide.layout !== "no-device") present.push("device");
@@ -461,6 +471,18 @@ function ElementTransformControls({
         </Button>
       </div>
 
+      {slide.imageElements && slide.imageElements.length > 0 && (
+        <ImageOverlayList
+          elements={slide.imageElements}
+          selectedId={
+            activeId && isImageElementId(activeId) ? imageElementKey(activeId) : null
+          }
+          onSelect={(imageId) => onSelectElement(toImageElementId(imageId))}
+          onReorder={(imageId, dir) => reorder(toImageElementId(imageId), dir)}
+          onDelete={deleteImageElement}
+        />
+      )}
+
       {activeId ? (
         <ActiveElementPanel
           activeId={activeId}
@@ -485,6 +507,7 @@ function ElementTransformControls({
           onDeleteImage={() => {
             if (activeImageElement) deleteImageElement(activeImageElement);
           }}
+          onUploaded={onUploadReconciled}
         />
       ) : (
         <div className="rounded border border-dashed bg-background/40 p-4 text-center text-[11px] text-muted-foreground">
@@ -508,6 +531,7 @@ function ActiveElementPanel({
   onDeleteText,
   onImagePatch,
   onDeleteImage,
+  onUploaded,
 }: {
   activeId: ElementId;
   transform: ElementTransform | undefined;
@@ -521,6 +545,7 @@ function ActiveElementPanel({
   onDeleteText: () => void;
   onImagePatch: (patch: Partial<ImageElement>) => void;
   onDeleteImage: () => void;
+  onUploaded: (project: ProjectDocumentV3) => void;
 }) {
   const engaged = !!transform;
   const rotation = transform?.rotation ?? 0;
@@ -559,7 +584,9 @@ function ActiveElementPanel({
         />
       )}
 
-      {imageElement && <ImageElementPanel element={imageElement} onPatch={onImagePatch} />}
+      {imageElement && (
+        <ImageElementPanel element={imageElement} onPatch={onImagePatch} onUploaded={onUploaded} />
+      )}
 
       <div className="space-y-1">
         <div className="flex items-center justify-between">
@@ -607,15 +634,23 @@ function ActiveElementPanel({
 function ImageElementPanel({
   element,
   onPatch,
+  onUploaded,
 }: {
   element: ImageElement;
   onPatch: (patch: Partial<ImageElement>) => void;
+  onUploaded: (project: ProjectDocumentV3) => void;
 }) {
   return (
     <div className="space-y-2 rounded border bg-muted/30 p-2">
       <div className="space-y-1">
         <Label className="text-[11px] text-muted-foreground">Image</Label>
-        <ScreenshotPicker label="Overlay image" value={element.src} onChange={(src) => onPatch({ src })} />
+        <ScreenshotPicker
+          label="Overlay image"
+          value={element.src}
+          assetKind="image"
+          onChange={(src) => onPatch({ src })}
+          onUploaded={onUploaded}
+        />
       </div>
       <div className="space-y-1">
         <Label className="text-[11px] text-muted-foreground">Fit</Label>
@@ -667,6 +702,121 @@ function ImageElementPanel({
           />
         </div>
       )}
+    </div>
+  );
+}
+
+function overlayLabel(src: string): string {
+  if (!src) return "Empty overlay";
+  if (src.startsWith("data:")) return "Inline image";
+  const filename = src.split("/").filter(Boolean).pop() ?? src;
+  const digest = /^[a-f0-9]{64}\./i.exec(filename);
+  if (!digest) return filename;
+  // Managed asset names are opaque SHA-256 digests; show the scoped path tail instead.
+  const segments = src.split("/");
+  const versionIndex = segments.indexOf("vibescreens-assets");
+  if (versionIndex >= 0 && segments.length - versionIndex >= 5) {
+    const [, , , kind] = segments.slice(versionIndex, versionIndex + 4);
+    return `${kind ?? "image"} · ${filename.slice(0, 10)}…`;
+  }
+  return filename.slice(0, 24);
+}
+
+/**
+ * Lists every image overlay on the active slide so multiple overlays stay
+ * manageable: select by click, restack, delete — mirroring the canvas.
+ */
+function ImageOverlayList({
+  elements,
+  selectedId,
+  onSelect,
+  onReorder,
+  onDelete,
+}: {
+  elements: ImageElement[];
+  selectedId: string | null;
+  onSelect: (imageId: string) => void;
+  onReorder: (imageId: string, dir: "front" | "back" | "up" | "down") => void;
+  onDelete: (element: ImageElement) => void;
+}) {
+  // Render topmost-last so the list reads like a layer stack.
+  const ranked = [...elements].sort(
+    (a, b) => (a.transform.zIndex ?? 0) - (b.transform.zIndex ?? 0),
+  );
+
+  return (
+    <div className="space-y-1 rounded border bg-background/60 p-2">
+      <div className="flex items-center justify-between">
+        <Label className="text-[11px] font-medium text-muted-foreground">
+          Image overlays ({elements.length})
+        </Label>
+        <span className="text-[10px] text-muted-foreground">click to select</span>
+      </div>
+      <ul className="space-y-1">
+        {ranked.map((element, index) => {
+          const selected = element.id === selectedId;
+          return (
+            <li key={element.id}>
+              <div
+                className={`flex items-center gap-1 rounded border px-1.5 py-1 text-xs transition-colors ${
+                  selected
+                    ? "border-primary bg-accent"
+                    : "border-transparent hover:bg-accent/50"
+                }`}
+              >
+                <button
+                  type="button"
+                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                  onClick={() => onSelect(element.id)}
+                  title={`Select ${overlayLabel(element.src)}`}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  {element.src ? (
+                    <img
+                      src={cachedImage(element.src)}
+                      alt=""
+                      className="h-7 w-7 shrink-0 rounded border bg-muted object-cover"
+                      draggable={false}
+                    />
+                  ) : (
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded border bg-muted">
+                      <ImagePlus className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+                    </span>
+                  )}
+                  <span className="min-w-0 flex-1 truncate">
+                    Image {index + 1} · {overlayLabel(element.src)}
+                  </span>
+                </button>
+                <LayerButton
+                  disabled={false}
+                  onClick={() => onReorder(element.id, "up")}
+                  label="Bring forward"
+                >
+                  <ChevronUp className="h-3 w-3" />
+                </LayerButton>
+                <LayerButton
+                  disabled={false}
+                  onClick={() => onReorder(element.id, "down")}
+                  label="Send backward"
+                >
+                  <ChevronDown className="h-3 w-3" />
+                </LayerButton>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 shrink-0 hover:text-destructive"
+                  onClick={() => onDelete(element)}
+                  title="Delete image overlay"
+                  aria-label={`Delete image overlay ${index + 1}`}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

@@ -2,18 +2,28 @@
 import * as React from "react";
 import JSZip from "jszip";
 import { toPng } from "html-to-image";
+import { Lock, Plus } from "lucide-react";
 import { Toaster, toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import {
-  getExportSizes,
   hasTheme,
   SCREENSHOT_FONTS,
   supportsLandscape,
   themeById,
 } from "@/lib/constants";
-import { detectPlatform, nid } from "@/lib/defaults";
+import { nid } from "@/lib/defaults";
 import { imageElementKey, isBuiltInElementId, isImageElementId, isTextElementId, textElementKey } from "@/lib/elements";
 import { preloadImages } from "@/lib/image-cache";
 import { resolveScreenshot, writeLocalized } from "@/lib/locale";
+import { applyEditorStateToProjectDocument } from "@/lib/project-editor-adapter";
+import { buildExportPlan, type ExportJob, type ExportPlan, type ExportScope } from "@/lib/export-plan";
+import {
+  executeProjectExportPlan,
+  ProjectExportCancelledError,
+  type ProjectExportEntry,
+  type ProjectExportProgress,
+} from "@/lib/project-export-client";
+import type { DeckRecord } from "@/lib/project-schema";
 import { useProject } from "@/lib/storage";
 import type {
   BuiltInElementId,
@@ -26,18 +36,67 @@ import type {
 } from "@/lib/types";
 import { Inspector } from "./inspector";
 import { PreviewStage } from "./preview-stage";
+import { ProjectExportDialog } from "./project-export-dialog";
 import { Sidebar } from "./sidebar";
 import { DeckCanvas, getCanvas } from "./slide-canvas";
 import { Toolbar } from "./toolbar";
+import { WorkspaceBar } from "./workspace-bar";
+
+type ExportRenderFrame = {
+  job: ExportJob;
+  deck: DeckRecord;
+};
 
 export function ScreenshotEditor() {
-  const { state, setState, hydrated, savedAt, saveError, reset, resetDevice, undo, redo, canUndo, canRedo } = useProject();
+  const {
+    state,
+    setState,
+    hydrated,
+    savedAt,
+    saveError,
+    resetDevice,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+    workspace,
+    projects,
+    project,
+    loading,
+    saving,
+    error,
+    conflict,
+    readOnly,
+    workspaceReadOnly,
+    migrationStatus,
+    flushPendingSave,
+    reloadLatest,
+    reconcileUpload,
+    createProject,
+    switchProject,
+    renameProject,
+    deleteProject,
+    createApp,
+    renameApp,
+    deleteApp,
+    createVersion,
+    cloneVersion,
+    renameVersion,
+    publishVersion,
+    deleteVersion,
+    selectAppVersion,
+  } = useProject();
   const [activeSlideId, setActiveSlideId] = React.useState<string | null>(null);
   const [selectedElement, setSelectedElement] = React.useState<SelectedElement | null>(null);
-  const [exporting, setExporting] = React.useState<string | null>(null);
   const [ready, setReady] = React.useState(false);
-  const [exportLocaleOverride, setExportLocaleOverride] = React.useState<string | null>(null);
-  const [exportSlideIndex, setExportSlideIndex] = React.useState(0);
+  const [exportDialogOpen, setExportDialogOpen] = React.useState(false);
+  const [exportPlan, setExportPlan] = React.useState<ExportPlan | null>(null);
+  const [exportPlanning, setExportPlanning] = React.useState(false);
+  const [exportError, setExportError] = React.useState<string | null>(null);
+  const [exportProgress, setExportProgress] = React.useState<ProjectExportProgress | null>(null);
+  const [exportRunning, setExportRunning] = React.useState(false);
+  const [exportFrame, setExportFrame] = React.useState<ExportRenderFrame | null>(null);
+  const exportControllerRef = React.useRef<AbortController | null>(null);
   const exportRef = React.useRef<HTMLDivElement | null>(null);
 
   const currentSlides = state.slidesByDevice[state.device] || [];
@@ -50,6 +109,19 @@ export function ScreenshotEditor() {
   const fontFaceCss = state.importedFont
     ? `@font-face { font-family: "ImportedScreenshotFont"; src: url("${state.importedFont.src}") format("${state.importedFont.format}"); font-display: swap; }`
     : undefined;
+  const selectedApp = project?.appsById[project.selection.appId];
+  const selectedVersion =
+    project === null || selectedApp === undefined
+      ? undefined
+      : selectedApp.versionsById[project.selection.versionId];
+  const publishedReadOnly = selectedVersion?.status === "published";
+  const editorContentLocked = readOnly || conflict !== null;
+  const editorUiLocked = editorContentLocked || exportRunning || exportPlanning || loading;
+  const exportingLabel = exportRunning
+    ? exportProgress === null
+      ? "starting…"
+      : `${exportProgress.completed}/${exportProgress.total}`
+    : null;
 
   React.useEffect(() => {
     if (selectedElement && selectedElement.slideId !== activeSlide?.id) {
@@ -65,10 +137,14 @@ export function ScreenshotEditor() {
   }, [hydrated, currentSlides, activeSlide]);
 
   React.useEffect(() => {
-    if (!supportsLandscape(state.device) && state.orientation !== "portrait") {
+    if (
+      !editorContentLocked &&
+      !supportsLandscape(state.device) &&
+      state.orientation !== "portrait"
+    ) {
       setState((p) => ({ ...p, orientation: "portrait" }));
     }
-  }, [state.device, state.orientation, setState]);
+  }, [editorContentLocked, state.device, state.orientation, setState]);
 
   React.useEffect(() => {
     if (hydrated && state.themeId && !hasTheme(state.themeId)) {
@@ -327,7 +403,7 @@ export function ScreenshotEditor() {
         (target.tagName === "INPUT" ||
           target.tagName === "TEXTAREA" ||
           (target as HTMLElement).isContentEditable);
-      if (exporting) return;
+      if (exportRunning || exportPlanning) return;
 
       if (e.key === "Escape") {
         setSelectedElement(null);
@@ -337,7 +413,7 @@ export function ScreenshotEditor() {
 
       // Let focused inputs and contenteditable text keep their native undo,
       // redo, selection, and deletion behavior.
-      if (inEditable) return;
+      if (inEditable || editorContentLocked) return;
 
       if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z")) {
         e.preventDefault();
@@ -374,7 +450,17 @@ export function ScreenshotEditor() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeSlide, currentSlides, duplicateSlide, deleteSlide, exporting, undo, redo]);
+  }, [
+    activeSlide,
+    currentSlides,
+    duplicateSlide,
+    deleteSlide,
+    editorContentLocked,
+    exportPlanning,
+    exportRunning,
+    undo,
+    redo,
+  ]);
 
   // ---------- Export ----------
 
@@ -386,132 +472,216 @@ export function ScreenshotEditor() {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
     });
 
-  async function exportAll() {
-    if (!currentSlides.length) {
-      toast.error("No screens to export");
-      return;
-    }
+  function resetExportReview() {
+    setExportPlan(null);
+    setExportError(null);
+  }
 
-    const sizes = getExportSizes(state.device, state.orientation);
-    if (!sizes.length) {
-      toast.error("Nothing to export");
-      return;
-    }
-    const locales = state.locales;
-    await preloadImages(assetPaths, { retryFailed: true });
-    await waitForPaint();
-
-    const missingScreens = currentSlides
-      .map((slide, index) => ({ slide, index }))
-      .filter(({ slide }) => slideNeedsScreenshot(state.device, slide) && !slide.screenshot);
-    const reusedBackScreens = currentSlides
-      .map((slide, index) => ({ slide, index }))
-      .filter(
-        ({ slide }) =>
-          state.device !== "feature-graphic" &&
-          slide.layout === "two-devices" &&
-          slide.screenshot &&
-          !slide.screenshotSecondary,
+  async function prepareProjectExport(scope: ExportScope) {
+    if (project === null) return;
+    setExportPlanning(true);
+    setExportError(null);
+    setExportPlan(null);
+    try {
+      await flushPendingSave();
+      let candidate = structuredClone(project);
+      const { appId, versionId, deckId } = candidate.selection;
+      const selected = candidate.appsById[appId]?.versionsById[versionId];
+      const scopeIncludesSelectedDraft =
+        selected?.status === "draft" &&
+        (scope.kind === "current" ||
+          (scope.kind === "all" && scope.includeDrafts === true) ||
+          (scope.kind === "selected" &&
+            scope.versions.some(
+              (entry) => entry.appId === appId && entry.versionId === versionId,
+            )));
+      if (scopeIncludesSelectedDraft) {
+        const selectedDeck = selected.decksById[deckId];
+        const axesAlreadySelected =
+          selectedDeck.device === state.device &&
+          selectedDeck.orientation === state.orientation &&
+          selectedDeck.locale.trim().normalize("NFKC").toLocaleLowerCase("en-US") ===
+            state.locale.trim().normalize("NFKC").toLocaleLowerCase("en-US");
+        candidate = applyEditorStateToProjectDocument(candidate, state, {
+          now: candidate.updatedAt,
+        });
+        // The adapter deliberately treats an axis change as selection-only. Apply
+        // once more to the cloned candidate so the newly selected draft deck also
+        // receives the latest editor fields without touching the live document.
+        if (!axesAlreadySelected) {
+          candidate = applyEditorStateToProjectDocument(candidate, state, {
+            now: candidate.updatedAt,
+          });
+        }
+      }
+      setExportPlan(
+        await buildExportPlan(candidate, scope, {
+          // Preflight verifies every managed asset is reachable before jobs
+          // render; a bundle claiming complete:true with blank screenshots was
+          // the exact failure mode this checker prevents.
+          assetFileExists: async (url) => {
+            try {
+              const response = await fetch(url, { method: "HEAD" });
+              return response.ok;
+            } catch {
+              return false;
+            }
+          },
+        }),
       );
-    if (missingScreens.length > 0 || reusedBackScreens.length > 0) {
-      const details = [
-        missingScreens.length
-          ? `${missingScreens.length} screen${missingScreens.length === 1 ? "" : "s"} will export with an empty device.`
-          : null,
-        reusedBackScreens.length
-          ? `${reusedBackScreens.length} two-device screen${reusedBackScreens.length === 1 ? "" : "s"} will reuse the primary screenshot in back.`
-          : null,
-      ].filter(Boolean);
-      toast.warning("Export includes placeholder screenshots", {
-        description: details.join(" "),
-        duration: 7000,
-      });
+    } catch (caught) {
+      setExportError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setExportPlanning(false);
     }
+  }
 
-    // Make sure custom fonts are loaded before snapshot so typography in PNG
-    // matches what's on screen.
-    if (typeof document !== "undefined" && document.fonts && document.fonts.ready) {
+  function throwIfExportCancelled(signal: AbortSignal) {
+    if (signal.aborted) throw new ProjectExportCancelledError(signal.reason);
+  }
+
+  function exportImageUrls(plan: ExportPlan, job: ExportJob): string[] {
+    const urls = new Set<string>(["/mockup.png"]);
+    for (const asset of Object.values(plan.snapshot.assetsById)) {
+      if (asset.kind !== "font" && asset.url && !asset.url.startsWith("data:")) {
+        urls.add(asset.url);
+      }
+    }
+    const deck =
+      plan.snapshot.appsById[job.appId].versionsById[job.versionId].decksById[
+        job.deckId
+      ];
+    if (deck.appIcon && !deck.appIcon.startsWith("data:")) urls.add(deck.appIcon);
+    for (const url of deck.crossScreenMockups ?? []) {
+      if (url && !url.startsWith("data:")) urls.add(url);
+    }
+    for (const slide of deck.slides) {
+      for (const raw of [slide.screenshot, slide.screenshotSecondary]) {
+        if (raw && !raw.startsWith("data:")) {
+          urls.add(resolveScreenshot(raw, job.locale));
+        }
+      }
+      for (const image of slide.imageElements ?? []) {
+        if (image.src && !image.src.startsWith("data:")) urls.add(image.src);
+      }
+    }
+    return [...urls].sort();
+  }
+
+  async function renderExportJob(
+    plan: ExportPlan,
+    job: ExportJob,
+    signal: AbortSignal,
+  ) {
+    throwIfExportCancelled(signal);
+    await preloadImages(exportImageUrls(plan, job), { retryFailed: true });
+    throwIfExportCancelled(signal);
+
+    const deck =
+      plan.snapshot.appsById[job.appId].versionsById[job.versionId].decksById[
+        job.deckId
+      ];
+    setExportFrame({ job, deck });
+    await waitForPaint();
+    if (typeof document !== "undefined" && document.fonts?.ready) {
       try {
         await document.fonts.ready;
       } catch {
-        /* ignore */
+        // A font loading error is reflected in the rendered fallback, not hidden.
       }
     }
+    await waitForPaint();
+    throwIfExportCancelled(signal);
 
-    const { cW, cH } = getCanvas(state.device, state.orientation);
-    const platform = detectPlatform(state.device);
+    const element = exportRef.current;
+    if (element === null) throw new Error("Export render target is unavailable");
+    const { cW, cH } = getCanvas(job.device, job.orientation);
+    const dataUrl = await captureSlide(element, cW, cH, job.width, job.height);
+    throwIfExportCancelled(signal);
+    const response = await fetch(dataUrl);
+    const data = await response.blob();
+    throwIfExportCancelled(signal);
+    return { jobId: job.id, data };
+  }
+
+  async function writeExportArchive(
+    entries: readonly ProjectExportEntry[],
+    signal: AbortSignal,
+  ): Promise<Blob> {
     const zip = new JSZip();
-    const totalUnits = sizes.length * locales.length * currentSlides.length;
-    let unit = 0;
-    let okCount = 0;
-    let failed = 0;
-    const errors: string[] = [];
-
-    for (const locale of locales) {
-      setExportLocaleOverride(locale);
-      await waitForPaint();
-
-      for (const size of sizes) {
-        for (let i = 0; i < currentSlides.length; i++) {
-          const slide = currentSlides[i];
-          unit += 1;
-          setExporting(`${unit}/${totalUnits}`);
-          setExportSlideIndex(i);
-          await waitForPaint();
-          const el = exportRef.current;
-          if (!el) {
-            failed += 1;
-            errors.push(`${locale} ${size.w}×${size.h} screen ${i + 1}: render target missing`);
-            continue;
-          }
-          try {
-            const dataUrl = await captureSlide(el, cW, cH, size.w, size.h);
-            const base64 = dataUrl.split(",")[1] || "";
-            const filename = `${String(i + 1).padStart(2, "0")}-${slide.layout}.png`;
-            const path = `${platform}/${state.device}/${size.w}x${size.h}/${locale}/${filename}`;
-            zip.file(path, base64, { base64: true });
-            okCount += 1;
-          } catch (e) {
-            failed += 1;
-            const msg = e instanceof Error ? e.message : String(e);
-            errors.push(`${locale} ${size.w}×${size.h} screen ${i + 1}: ${msg}`);
-            console.error("Export failed", { slideId: slide.id, locale, size }, e);
-          }
-        }
-      }
+    for (const entry of entries) {
+      throwIfExportCancelled(signal);
+      zip.file(entry.path, entry.data);
     }
+    const archive = await zip.generateAsync(
+      { type: "blob" },
+      () => throwIfExportCancelled(signal),
+    );
+    throwIfExportCancelled(signal);
+    return archive;
+  }
 
-    setExportLocaleOverride(null);
-    setExporting(null);
-
-    if (okCount > 0) {
-      try {
-        const blob = await zip.generateAsync({ type: "blob" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `${slugify(state.appName)}-${platform}-${state.device}-${stamp()}.zip`;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 5000);
-      } catch (e) {
-        toast.error("Couldn't bundle export");
-        console.error(e);
-        return;
-      }
+  async function downloadExport(
+    archive: Blob,
+    fileName: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    throwIfExportCancelled(signal);
+    const url = URL.createObjectURL(archive);
+    try {
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName;
+      anchor.hidden = true;
+      document.body.appendChild(anchor);
+      throwIfExportCancelled(signal);
+      anchor.click();
+      anchor.remove();
+    } finally {
+      URL.revokeObjectURL(url);
     }
+  }
 
-    const summary = `${locales.length} locale${locales.length === 1 ? "" : "s"} × ${sizes.length} size${sizes.length === 1 ? "" : "s"}`;
-    if (failed === 0) {
-      toast.success(`Exported ${okCount} PNGs (${summary})`);
-    } else if (okCount === 0) {
-      toast.error(`All ${failed} renders failed`, {
-        description: errors.slice(0, 3).join("\n"),
+  async function startProjectExport() {
+    if (exportPlan === null || exportPlan.preflight.errors.length > 0) return;
+    const controller = new AbortController();
+    exportControllerRef.current = controller;
+    setExportDialogOpen(false);
+    setExportRunning(true);
+    setExportProgress(null);
+    setExportError(null);
+    try {
+      const completed = await executeProjectExportPlan(exportPlan, {
+        signal: controller.signal,
+        renderJob: (job, signal) => renderExportJob(exportPlan, job, signal),
+        archiveWriter: writeExportArchive,
+        downloadSink: ({ archive, fileName }, signal) =>
+          downloadExport(archive, fileName, signal),
+        onProgress: setExportProgress,
       });
-    } else {
-      toast.error(`${failed} of ${totalUnits} renders failed`, {
-        description: errors.slice(0, 3).join("\n"),
-      });
+      toast.success(
+        `Exported ${completed.plan.jobs.length} PNG${completed.plan.jobs.length === 1 ? "" : "s"}`,
+      );
+    } catch (caught) {
+      if (caught instanceof ProjectExportCancelledError || controller.signal.aborted) {
+        toast.info("Export cancelled");
+      } else {
+        const message = caught instanceof Error ? caught.message : String(caught);
+        setExportError(message);
+        toast.error("Project export failed", { description: message });
+      }
+    } finally {
+      if (exportControllerRef.current === controller) {
+        exportControllerRef.current = null;
+      }
+      setExportFrame(null);
+      setExportProgress(null);
+      setExportRunning(false);
     }
+  }
+
+  function cancelProjectExport() {
+    exportControllerRef.current?.abort("Cancelled by user");
   }
 
   async function captureSlide(
@@ -561,208 +731,343 @@ export function ScreenshotEditor() {
 
   // ---------- Render ----------
 
-  if (!hydrated || !ready) {
-    return (
-      <div className="flex h-screen items-center justify-center">
-        <div className="flex flex-col items-center gap-2 text-muted-foreground">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-current border-t-transparent" />
-          <p className="text-sm">Loading editor…</p>
-        </div>
-      </div>
-    );
-  }
-
-  const { cW, cH } = getCanvas(state.device, state.orientation);
-  const busy = !!exporting;
+  const exportCanvas =
+    exportFrame === null
+      ? null
+      : getCanvas(exportFrame.job.device, exportFrame.job.orientation);
+  const exportTheme =
+    exportFrame === null ? null : themeById(exportFrame.deck.themeId);
+  const exportFontFamily =
+    exportFrame?.deck.fontId === "self-hosted" && exportFrame.deck.importedFont
+      ? '"ImportedScreenshotFont", Georgia, serif'
+      : exportFrame === null
+        ? undefined
+        : SCREENSHOT_FONTS[
+            (exportFrame.deck.fontId || "system-sans") as keyof typeof SCREENSHOT_FONTS
+          ]?.family ?? SCREENSHOT_FONTS["system-sans"].family;
+  const exportFontFaceCss = exportFrame?.deck.importedFont
+    ? `@font-face { font-family: "ImportedScreenshotFont"; src: url("${exportFrame.deck.importedFont.src}") format("${exportFrame.deck.importedFont.format}"); font-display: swap; }`
+    : undefined;
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
       <Toaster position="top-right" richColors closeButton />
-      <Toolbar
-        appName={state.appName}
-        setAppName={(v) => setState((p) => ({ ...p, appName: v }))}
-        connectedCanvas={state.connectedCanvas}
-        setConnectedCanvas={(v) => setState((p) => ({ ...p, connectedCanvas: v }))}
-        themeId={state.themeId}
-        setThemeId={(v) => setState((p) => ({ ...p, themeId: v }))}
-        fontId={state.fontId || "system-sans"}
-        setFontId={(v) => setState((p) => ({ ...p, fontId: v }))}
-        importedFont={state.importedFont}
-        setImportedFont={(importedFont) => setState((p) => ({ ...p, fontId: "self-hosted", importedFont }))}
-        locale={state.locale}
-        setLocale={(v) => setState((p) => ({ ...p, locale: v }))}
-        locales={state.locales}
-        device={state.device}
-        setDevice={(v) => setState((p) => ({ ...p, device: v }))}
-        orientation={state.orientation}
-        setOrientation={(v) => setState((p) => ({ ...p, orientation: v }))}
-        onExport={exportAll}
-        onResetAll={() => {
-          reset();
-          setActiveSlideId(null);
-          toast.success("Reset all devices to defaults");
+      <WorkspaceBar
+        workspace={workspace}
+        projects={projects}
+        project={project}
+        loading={loading || exportPlanning || exportRunning}
+        saving={saving}
+        readOnly={editorContentLocked}
+        workspaceReadOnly={workspaceReadOnly || conflict !== null}
+        migrationStatus={migrationStatus}
+        error={error}
+        conflict={conflict}
+        onReloadLatest={reloadLatest}
+        onSelectProject={switchProject}
+        onCreateProject={createProject}
+        onRenameProject={renameProject}
+        onDeleteProject={deleteProject}
+        onSelectApp={(appId) => {
+          const app = project?.appsById[appId];
+          const versionId = app?.versionOrder[0];
+          if (versionId !== undefined) return selectAppVersion(appId, versionId);
         }}
-        onResetDevice={() => {
-          resetDevice(state.device);
-          setActiveSlideId(null);
-          toast.success(`Reset ${state.device} to defaults`);
-        }}
-        onUndo={undo}
-        onRedo={redo}
-        canUndo={canUndo}
-        canRedo={canRedo}
-        exporting={exporting}
-        savedAt={savedAt}
-        saveError={saveError}
-        busy={busy}
+        onCreateApp={createApp}
+        onRenameApp={renameApp}
+        onDeleteApp={deleteApp}
+        onSelectVersion={(appId, versionId) => selectAppVersion(appId, versionId)}
+        onCreateVersion={createVersion}
+        onCloneVersion={cloneVersion}
+        onRenameVersion={renameVersion}
+        onDeleteVersion={deleteVersion}
+        onPublishVersion={publishVersion}
       />
 
-      <div className="flex flex-1 overflow-hidden md:flex-row flex-col">
-        <aside className="md:w-72 w-full shrink-0 border-r bg-card md:max-h-none max-h-64 overflow-hidden">
-          <Sidebar
-            slides={currentSlides}
-            activeId={activeSlide?.id || null}
-            device={state.device}
-            orientation={state.orientation}
-            theme={theme}
-            locale={state.locale}
-            appName={state.appName}
-            appIcon={state.appIcon}
-            connectedCanvas={state.connectedCanvas}
-            disabled={busy}
-            onReorder={reorderSlides}
-            onSelect={setActiveSlideId}
-            onDelete={deleteSlide}
-            onDuplicate={duplicateSlide}
-            onAdd={addSlide}
-          />
-        </aside>
-
-        <main className="flex flex-1 items-stretch overflow-hidden min-h-0">
-          {activeSlide && currentSlides.length > 0 ? (
-            <PreviewStage
-              slides={currentSlides}
-              activeSlideId={activeSlide.id}
-              device={state.device}
-              orientation={state.orientation}
-              theme={theme}
-              locale={state.locale}
-              appName={state.appName}
-              appIcon={state.appIcon}
-              fontFamily={fontFamily}
-              fontFaceCss={fontFaceCss}
-              connectedCanvas={state.connectedCanvas}
-              selectedElement={selectedElement}
-              onActiveSlideChange={setActiveSlideId}
-              onLabelChange={(slide, v) => patchLocalized(slide, "label", v)}
-              onHeadlineChange={(slide, v) => patchLocalized(slide, "headline", v)}
-              onTextElementTextChange={patchTextElementText}
-              onElementChange={patchElementTransform}
-              onSelectElement={setSelectedElement}
-            />
-          ) : (
-            <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center text-sm text-muted-foreground">
-              <p className="font-medium text-foreground">No screen selected</p>
-              <p>Add a screen on the left to get started.</p>
+      {!hydrated || (project !== null && !ready) ? (
+        <div className="flex flex-1 items-center justify-center">
+          <div className="flex flex-col items-center gap-2 text-muted-foreground" role="status">
+            <div className="h-6 w-6 animate-spin rounded-full border-2 border-current border-t-transparent" />
+            <p className="text-sm">Loading editor…</p>
+          </div>
+        </div>
+      ) : project === null ? (
+        <main className="flex flex-1 items-center justify-center p-8">
+          <div className="max-w-md rounded-xl border border-dashed bg-card p-8 text-center shadow-sm">
+            <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
+              {workspaceReadOnly ? <Lock className="h-5 w-5" aria-hidden /> : <Plus className="h-5 w-5" aria-hidden />}
             </div>
-          )}
+            <h1 className="text-lg font-semibold">
+              {workspaceReadOnly ? "Workspace is read-only" : "Create your first project"}
+            </h1>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {workspaceReadOnly
+                ? "This workspace cannot be edited with the current schema. Use the workspace status above to resolve the issue."
+                : "Use “Create your first project” in the workspace controls above. Your apps, versions, decks, and assets will stay isolated inside it."}
+            </p>
+          </div>
         </main>
-
-        <aside className="md:w-80 w-full shrink-0 border-l bg-card md:max-h-none max-h-96 overflow-hidden">
-          {activeSlide ? (
-            <Inspector
-              slide={activeSlide}
-              device={state.device}
-              orientation={state.orientation}
-              theme={theme}
-              locale={state.locale}
-              selectedElementId={
-                selectedElement?.slideId === activeSlide.id ? selectedElement.elementId : null
-              }
-              onChange={(patch) => patchSlide(activeSlide.id, patch)}
-              onSelectElement={(elementId) =>
-                setSelectedElement(
-                  elementId ? { slideId: activeSlide.id, elementId } : null,
-                )
-              }
-            />
-          ) : (
-            <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-sm text-muted-foreground">
-              <p className="font-medium text-foreground">Nothing to inspect</p>
-              <p className="text-xs">Screen settings will appear here once you add or select one.</p>
-            </div>
+      ) : (
+        <>
+          {publishedReadOnly && selectedApp && selectedVersion && (
+            <section
+              className="flex flex-wrap items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-950 dark:text-amber-100"
+              aria-label="Published version read-only notice"
+            >
+              <Lock className="h-4 w-4 shrink-0" aria-hidden />
+              <p className="min-w-0 flex-1">
+                <span className="font-semibold">Published and immutable.</span>{" "}
+                {selectedApp.name} · {selectedVersion.name} is read-only. Clone it before editing.
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={loading || saving || exportPlanning || exportRunning || conflict !== null}
+                onClick={() => {
+                  const existing = new Set(
+                    Object.values(selectedApp.versionsById).map((entry) =>
+                      entry.name.trim().normalize("NFKC").toLocaleLowerCase("en-US"),
+                    ),
+                  );
+                  const base = `${selectedVersion.name} Draft`;
+                  let name = base;
+                  let suffix = 2;
+                  while (existing.has(name.toLocaleLowerCase("en-US"))) {
+                    name = `${base} ${suffix}`;
+                    suffix += 1;
+                  }
+                  void cloneVersion(selectedApp.id, selectedVersion.id, name);
+                }}
+              >
+                Clone to draft
+              </Button>
+            </section>
           )}
-        </aside>
-      </div>
+          {editorContentLocked && !publishedReadOnly && (
+            <section
+              className="flex items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-950 dark:text-amber-100"
+              role="status"
+            >
+              <Lock className="h-4 w-4" aria-hidden />
+              Editor content is locked until the workspace error or conflict is resolved.
+            </section>
+          )}
 
-      {/* Off-screen export container — full-resolution canvases for html-to-image. */}
-      <div
-        aria-hidden
-        style={{
-          position: "absolute",
-          left: -99999,
-          top: 0,
-          pointerEvents: "none",
-        }}
-      >
-        {currentSlides.length > 0 && (
-          <div
-            ref={exportRef}
-            style={{
-              width: cW,
-              height: cH,
-              overflow: "hidden",
-              position: "absolute",
-              left: -99999,
-              top: 0,
+          <Toolbar
+            appName={state.appName}
+            setAppName={(value) => setState((previous) => ({ ...previous, appName: value }))}
+            connectedCanvas={state.connectedCanvas}
+            setConnectedCanvas={(value) =>
+              setState((previous) => ({ ...previous, connectedCanvas: value }))
+            }
+            themeId={state.themeId}
+            setThemeId={(value) => setState((previous) => ({ ...previous, themeId: value }))}
+            fontId={state.fontId || "system-sans"}
+            setFontId={(value) => setState((previous) => ({ ...previous, fontId: value }))}
+            importedFont={state.importedFont}
+            setImportedFont={(importedFont) =>
+              setState((previous) => ({
+                ...previous,
+                fontId: "self-hosted",
+                importedFont,
+              }))
+            }
+            locale={state.locale}
+            setLocale={(value) => setState((previous) => ({ ...previous, locale: value }))}
+            locales={state.locales}
+            device={state.device}
+            setDevice={(value) => setState((previous) => ({ ...previous, device: value }))}
+            orientation={state.orientation}
+            setOrientation={(value) =>
+              setState((previous) => ({ ...previous, orientation: value }))
+            }
+            onExport={() => {
+              resetExportReview();
+              setExportDialogOpen(true);
             }}
-          >
+            onCancelExport={cancelProjectExport}
+            onResetDeck={() => {
+              resetDevice(state.device);
+              setActiveSlideId(null);
+              toast.success("Reset active deck to defaults");
+            }}
+            onUndo={undo}
+            onRedo={redo}
+            canUndo={canUndo}
+            canRedo={canRedo}
+            exporting={exportingLabel}
+            savedAt={savedAt}
+            saveError={saveError}
+            busy={editorUiLocked}
+            onUploadReconciled={reconcileUpload}
+          />
+
+          <div className="flex flex-1 overflow-hidden md:flex-row flex-col">
+            <aside className="md:w-72 w-full shrink-0 border-r bg-card md:max-h-none max-h-64 overflow-hidden">
+              <fieldset
+                disabled={editorUiLocked}
+                aria-disabled={editorUiLocked}
+                className={`h-full min-w-0 border-0 p-0 ${editorUiLocked ? "pointer-events-none select-none opacity-70" : ""}`}
+              >
+                <Sidebar
+                  slides={currentSlides}
+                  activeId={activeSlide?.id || null}
+                  device={state.device}
+                  orientation={state.orientation}
+                  theme={theme}
+                  locale={state.locale}
+                  appName={state.appName}
+                  appIcon={state.appIcon}
+                  connectedCanvas={state.connectedCanvas}
+                  disabled={editorUiLocked}
+                  onReorder={reorderSlides}
+                  onSelect={setActiveSlideId}
+                  onDelete={deleteSlide}
+                  onDuplicate={duplicateSlide}
+                  onAdd={addSlide}
+                />
+              </fieldset>
+            </aside>
+
+            <main className="flex flex-1 items-stretch overflow-hidden min-h-0">
+              <fieldset
+                disabled={editorUiLocked}
+                aria-disabled={editorUiLocked}
+                className={`flex min-w-0 flex-1 border-0 p-0 ${editorUiLocked ? "pointer-events-none select-none" : ""}`}
+              >
+                {activeSlide && currentSlides.length > 0 ? (
+                  <PreviewStage
+                    slides={currentSlides}
+                    activeSlideId={activeSlide.id}
+                    device={state.device}
+                    orientation={state.orientation}
+                    theme={theme}
+                    locale={state.locale}
+                    appName={state.appName}
+                    appIcon={state.appIcon}
+                    fontFamily={fontFamily}
+                    fontFaceCss={fontFaceCss}
+                    connectedCanvas={state.connectedCanvas}
+                    selectedElement={selectedElement}
+                    onActiveSlideChange={setActiveSlideId}
+                    onLabelChange={(slide, value) => patchLocalized(slide, "label", value)}
+                    onHeadlineChange={(slide, value) =>
+                      patchLocalized(slide, "headline", value)
+                    }
+                    onTextElementTextChange={patchTextElementText}
+                    onElementChange={patchElementTransform}
+                    onSelectElement={setSelectedElement}
+                  />
+                ) : (
+                  <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center text-sm text-muted-foreground">
+                    <p className="font-medium text-foreground">No screen selected</p>
+                    <p>Add a screen on the left to get started.</p>
+                  </div>
+                )}
+              </fieldset>
+            </main>
+
+            <aside className="md:w-80 w-full shrink-0 border-l bg-card md:max-h-none max-h-96 overflow-hidden">
+              <fieldset
+                disabled={editorUiLocked}
+                aria-disabled={editorUiLocked}
+                className={`h-full min-w-0 border-0 p-0 ${editorUiLocked ? "pointer-events-none select-none opacity-70" : ""}`}
+              >
+                {activeSlide ? (
+                  <Inspector
+                    slide={activeSlide}
+                    device={state.device}
+                    orientation={state.orientation}
+                    theme={theme}
+                    locale={state.locale}
+                    selectedElementId={
+                      selectedElement?.slideId === activeSlide.id
+                        ? selectedElement.elementId
+                        : null
+                    }
+                    onChange={(patch) => patchSlide(activeSlide.id, patch)}
+                    onSelectElement={(elementId) =>
+                      setSelectedElement(
+                        elementId ? { slideId: activeSlide.id, elementId } : null,
+                      )
+                    }
+                    onUploadReconciled={reconcileUpload}
+                  />
+                ) : (
+                  <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-sm text-muted-foreground">
+                    <p className="font-medium text-foreground">Nothing to inspect</p>
+                    <p className="text-xs">
+                      Screen settings will appear here once you add or select one.
+                    </p>
+                  </div>
+                )}
+              </fieldset>
+            </aside>
+          </div>
+
+          <ProjectExportDialog
+            open={exportDialogOpen}
+            onOpenChange={setExportDialogOpen}
+            project={project}
+            plan={exportPlan}
+            planning={exportPlanning}
+            error={exportError}
+            onScopeChange={resetExportReview}
+            onPrepare={prepareProjectExport}
+            onExport={() => void startProjectExport()}
+          />
+
+          {exportFrame !== null && exportCanvas !== null && exportTheme !== null && (
             <div
+              aria-hidden="true"
+              inert
               style={{
                 position: "absolute",
-                left: -exportSlideIndex * cW,
+                left: -99999,
                 top: 0,
-                width: cW * currentSlides.length,
-                height: cH,
+                pointerEvents: "none",
               }}
             >
-              <DeckCanvas
-                slides={currentSlides}
-                device={state.device}
-                orientation={state.orientation}
-                theme={theme}
-                locale={exportLocaleOverride ?? state.locale}
-                appName={state.appName}
-                appIcon={state.appIcon}
-                fontFamily={fontFamily}
-                fontFaceCss={fontFaceCss}
-                connectedCanvas={state.connectedCanvas}
-                hideEmpty
-              />
+              <div
+                ref={exportRef}
+                style={{
+                  width: exportCanvas.cW,
+                  height: exportCanvas.cH,
+                  overflow: "hidden",
+                  position: "absolute",
+                  left: -99999,
+                  top: 0,
+                }}
+              >
+                <div
+                  style={{
+                    position: "absolute",
+                    left: -exportFrame.job.slideIndex * exportCanvas.cW,
+                    top: 0,
+                    width: exportCanvas.cW * exportFrame.deck.slides.length,
+                    height: exportCanvas.cH,
+                  }}
+                >
+                  <DeckCanvas
+                    slides={exportFrame.deck.slides}
+                    device={exportFrame.job.device}
+                    orientation={exportFrame.job.orientation}
+                    theme={exportTheme}
+                    locale={exportFrame.job.locale}
+                    appName={exportFrame.deck.appName}
+                    appIcon={exportFrame.deck.appIcon}
+                    fontFamily={exportFontFamily}
+                    fontFaceCss={exportFontFaceCss}
+                    connectedCanvas={exportFrame.deck.connectedCanvas}
+                    hideEmpty
+                  />
+                </div>
+              </div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </>
+      )}
     </div>
   );
-}
-
-function slugify(s: string) {
-  return (
-    s
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/(^-|-$)/g, "") || "screenshots"
-  );
-}
-
-function slideNeedsScreenshot(device: Device, slide: Slide) {
-  if (device === "feature-graphic") return false;
-  return slide.layout !== "no-device" && slide.layout !== "feature-graphic";
-}
-
-function stamp() {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
 }

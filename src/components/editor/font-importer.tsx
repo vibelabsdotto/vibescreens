@@ -2,15 +2,18 @@
 import * as React from "react";
 import { Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import type { ProjectDocumentV3 } from "@/lib/project-schema";
 import type { ImportedFont } from "@/lib/types";
 
 type Props = {
   disabled: boolean;
   importedFont?: ImportedFont;
   onImported: (font: ImportedFont) => void;
+  /** Receives the server project returned by a managed upload (revision bump). */
+  onUploaded?: (project: ProjectDocumentV3) => void;
 };
 
-export function FontImporter({ disabled, importedFont, onImported }: Props) {
+export function FontImporter({ disabled, importedFont, onImported, onUploaded }: Props) {
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -22,8 +25,18 @@ export function FontImporter({ disabled, importedFont, onImported }: Props) {
     form.append("font", file);
     try {
       const response = await fetch("/api/upload-font", { method: "POST", body: form });
-      const data = (await response.json()) as { ok: boolean; error?: string; font?: ImportedFont };
+      const data = (await response.json()) as {
+        ok: boolean;
+        error?: string;
+        font?: ImportedFont;
+        project?: unknown;
+      };
       if (!data.ok || !data.font) throw new Error(data.error || "Could not import that font.");
+      // Adopt the server's revision bump before the imported font triggers the
+      // next autosave; otherwise that save reuses the pre-upload revision (409).
+      if (data.project !== null && typeof data.project === "object") {
+        onUploaded?.(data.project as ProjectDocumentV3);
+      }
       onImported(data.font);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not import that font.");

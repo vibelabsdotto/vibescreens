@@ -4,15 +4,23 @@ import { Image as ImageIcon, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { didFail, img, setImage } from "@/lib/image-cache";
 import { resolveScreenshot } from "@/lib/locale";
+import type { ProjectDocumentV3 } from "@/lib/project-schema";
 
 type Props = {
   label: string;
   value: string;
   locale?: string;
+  assetKind?: "screenshot" | "image" | "app-icon";
   onChange: (v: string) => void;
+  /** Receives the server project returned by a managed upload (revision bump). */
+  onUploaded?: (project: ProjectDocumentV3) => void;
 };
 
 const ACCEPTED = ["image/png", "image/jpeg"];
+
+type UploadResult =
+  | { path: string; project: ProjectDocumentV3 | null; error: null }
+  | { path: null; project: null; error: string };
 
 async function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -23,22 +31,61 @@ async function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
-async function uploadDataUrl(dataUrl: string): Promise<string | null> {
+async function uploadDataUrl(
+  dataUrl: string,
+  fileName: string,
+  kind: NonNullable<Props["assetKind"]>,
+): Promise<UploadResult> {
   try {
-    const resp = await fetch("/api/upload", {
+    const response = await fetch("/api/upload", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ dataUrl }),
+      body: JSON.stringify({ dataUrl, fileName, kind }),
     });
-    if (!resp.ok) return null;
-    const json = (await resp.json()) as { ok: boolean; path?: string };
-    return json.ok && json.path ? json.path : null;
+    let body: { ok?: boolean; path?: unknown; error?: unknown; project?: unknown };
+    try {
+      body = (await response.json()) as typeof body;
+    } catch {
+      return {
+        path: null,
+        project: null,
+        error: response.ok
+          ? "Upload returned an invalid response; using the inline image instead."
+          : `Upload failed (${response.status}); using the inline image instead.`,
+      };
+    }
+    if (!response.ok || body.ok !== true || typeof body.path !== "string") {
+      return {
+        path: null,
+        project: null,
+        error:
+          typeof body.error === "string"
+            ? body.error
+            : `Upload failed (${response.status}); using the inline image instead.`,
+      };
+    }
+    const project =
+      body.project !== null && typeof body.project === "object"
+        ? (body.project as ProjectDocumentV3)
+        : null;
+    return { path: body.path, project, error: null };
   } catch {
-    return null;
+    return {
+      path: null,
+      project: null,
+      error: "Could not reach the upload endpoint; using the inline image instead.",
+    };
   }
 }
 
-export function ScreenshotPicker({ label, value, locale, onChange }: Props) {
+export function ScreenshotPicker({
+  label,
+  value,
+  locale,
+  assetKind = "screenshot",
+  onChange,
+  onUploaded,
+}: Props) {
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -46,7 +93,7 @@ export function ScreenshotPicker({ label, value, locale, onChange }: Props) {
 
   React.useEffect(() => {
     setError(null);
-  }, [value, locale]);
+  }, [locale, assetKind]);
 
   async function handleFile(file: File) {
     setError(null);
@@ -65,18 +112,22 @@ export function ScreenshotPicker({ label, value, locale, onChange }: Props) {
       setError("Failed to read file");
       return;
     }
-    // Try to persist to disk so the screenshot survives a git clone.
-    // If the upload endpoint is unreachable (e.g. static export), fall back
-    // to the inline data URI — still works in the current session.
+    // Persist managed assets when the endpoint is available. Static exports
+    // and rejected uploads keep the existing inline-data fallback.
     setUploading(true);
-    const uploadedPath = await uploadDataUrl(dataUrl);
+    const upload = await uploadDataUrl(dataUrl, file.name, assetKind);
     setUploading(false);
-    if (uploadedPath) {
-      setImage(uploadedPath, dataUrl);
-      onChange(uploadedPath);
+    if (upload.path !== null) {
+      // Adopt the server's revision bump BEFORE the changed value triggers the
+      // next autosave, otherwise that save reuses the pre-upload revision and
+      // gets a 409 conflict.
+      if (upload.project !== null) onUploaded?.(upload.project);
+      setImage(upload.path, dataUrl);
+      onChange(upload.path);
     } else {
       setImage(dataUrl, dataUrl);
       onChange(dataUrl);
+      setError(upload.error);
     }
   }
 
