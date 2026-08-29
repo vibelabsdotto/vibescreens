@@ -235,3 +235,47 @@ export const THEMES: Record<string, Theme> = {
 
 export function themeById(themeId: string | undefined): Theme {
   return THEMES[themeId || ""] || THEMES[DEFAULT_THEME_ID];
+}
+
+export function hasTheme(themeId: string | undefined): boolean {
+  return !!themeId && !!THEMES[themeId];
+}
+
+export const STORAGE_KEY = "app-store-screenshots:project:v1";
+export const PROJECT_SCHEMA_VERSION = 2;
+
+export const DEVICE_LABEL: Record<Device, string> = {
+  iphone: "iPhone",
+  ipad: "iPad",
+  tvos: "Apple TV",
+  watchos: "Apple Watch",
+  carplay: "CarPlay (iPhone slot)",
+  android: "Android Phone",
+  "android-7": 'Android 7" Tablet',
+  "android-10": 'Android 10" Tablet',
+  macos: "macOS",
+  windows: "Windows",
+  "feature-graphic": "Feature Graphic",
+};
+
+// Friendly labels for slide layouts (used in dropdowns)
+export const LAYOUT_LABEL: Record<SlideLayout, string> = {
+  hero: "Hero",
+  "device-bottom": "Device bottom",
+  "device-top": "Device top",
+  "two-devices": "Two devices",
+  "no-device": "No device",
+  "split-landscape": "Split (landscape)",
+  "feature-graphic": "Feature graphic",
+};
+
+// Short description shown under each layout name
+export const LAYOUT_HINT: Record<SlideLayout, string> = {
+  hero: "Headline above, device at bottom",
+  "device-bottom": "Headline top, device anchored below",
+  "device-top": "Flipped — device on top",
+  "two-devices": "Layered back + front phones",
+  "no-device": "Big standalone headline",
+  "split-landscape": "Caption left, device right",
+  "feature-graphic": "1024×500 Play Store banner",
+};

@@ -177,3 +177,4 @@ const IOS_DEVICES: ReadonlySet<Device> = new Set<Device>([
 export function detectPlatform(device: Device): "ios" | "android" | "desktop" {
   if (device === "macos" || device === "windows") return "desktop";
   return IOS_DEVICES.has(device) ? "ios" : "android";
+}

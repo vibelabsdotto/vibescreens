@@ -76,6 +76,28 @@ export function rejectCrossSiteWrite(req: Request): GuardFailure | null {
   return null;
 }
 
+
+/**
+ * Multipart variant for `POST /api/upload-font` which uses `multipart/form-data`.
+ * Same origin/sec-fetch checks as `rejectCrossSiteWrite`, but requires
+ * `Content-Type: multipart/form-data` (also not CORS-simple).
+ */
+export function rejectCrossSiteMultipartWrite(req: Request): GuardFailure | null {
+  const contentType = req.headers.get("content-type") || "";
+  if (!contentType.toLowerCase().split(";")[0].trim().startsWith("multipart/form-data")) {
+    return { error: "Content-Type must be multipart/form-data", status: 415 };
+  }
+  const origin = req.headers.get("origin");
+  if (origin && !LOOPBACK.test(origin)) {
+    return { error: "Cross-origin write rejected", status: 403 };
+  }
+  const site = req.headers.get("sec-fetch-site");
+  if (site && site !== "same-origin" && site !== "same-site" && site !== "none") {
+    return { error: "Cross-site write rejected", status: 403 };
+  }
+  return null;
+}
+
 /** Magic-byte sniff. Returns the real type, or null if it is neither. */
 export function sniffImageType(bytes: Buffer): "image/png" | "image/jpeg" | null {
   if (

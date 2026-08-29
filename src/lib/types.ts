@@ -78,5 +78,77 @@ export type ImageElement = {
   fade?: {
     edge: "top" | "bottom" | "left" | "right";
     amount: number;
-  };
+};
+};
+
+export type Slide = {
+  id: string;
+  layout: SlideLayout;
+  label: LocalizedText;       // tiny uppercase caption above headline, per locale
+  headline: LocalizedText;    // multi-line; newlines are intentional, per locale
+  screenshot: string;         // path under /screenshots/ — may contain {locale}
+  screenshotSecondary?: string; // for two-devices layout — may contain {locale}
+  inverted?: boolean;         // dark background variant
+  backgroundColor?: string;   // per-slide hex color override
+  /** Optional relative font-size scales for built-in caption text. */
+  typography?: SlideTypography;
+  // Per-element overrides; when present, replaces layout default placement.
+  transforms?: Partial<Record<BuiltInElementId, ElementTransform>>;
+  textElements?: TextElement[];
+  imageElements?: ImageElement[];
+};
+
+export type ThemeId =
+  | "clean-light"
+  | "dark-bold"
+  | "warm-editorial"
+  | "ocean-fresh"
+  | "bloom-roast";
+
+export type ScreenshotFontId =
+  | "template-serif"
+  | "system-sans"
+  | "classic-serif"
+  | "avenir-next"
+  | "helvetica-neue"
+  | "american-typewriter"
+  | "baskerville"
+  | "optima"
+  | "palatino"
+  | "futura"
+  | "self-hosted";
+
+export type ImportedFont = {
+  src: string;
+  format: "woff2" | "woff" | "truetype" | "opentype";
+};
+
+export type Theme = {
+  id: string;
+  name: string;
+  bg: string;          // primary background
+  bgAlt: string;       // inverted background
+  fg: string;          // text on bg
+  fgAlt: string;       // text on bgAlt
+  accent: string;
+  muted: string;
+};
+
+export type ProjectState = {
+  schemaVersion?: number;
+  appName: string;
+  themeId: string;
+  fontId?: ScreenshotFontId;
+  importedFont?: ImportedFont;
+  // v1 projects render as isolated screens until the user opts into connected crops.
+  connectedCanvas: boolean;
+  // Locales this project targets. Drives the toolbar dropdown and bulk export.
+  // Single-locale projects ship as ["en"] and hide the locale UI.
+  locales: string[];
+  locale: string;
+  device: Device;
+  orientation: Orientation;
+  // Per-device slide decks so platform switching preserves work
+  slidesByDevice: Record<Device, Slide[]>;
+  appIcon?: string;    // path under /public (e.g. /app-icon.png)
 };

@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 2,
+  "appName": "Legacy App",
+  "themeId": "ocean-fresh",
+  "fontId": "self-hosted",
+  "importedFont": {
+    "src": "/fonts/imported/custom.woff2",
+    "format": "woff2"
+  },
+  "connectedCanvas": true,
+  "locales": ["en", "de"],
+  "locale": "de",
+  "device": "iphone",
+  "orientation": "portrait",
+  "appIcon": "/app-icon.png",
+  "slidesByDevice": {
+    "iphone": [
+      {
+        "id": "slide-one",
+        "layout": "hero",
+        "label": { "en": "WELCOME", "de": "WILLKOMMEN" },
+        "headline": { "en": "Hello", "de": "Hallo" },
+        "screenshot": "/screenshots/{locale}/phone.png",
+        "imageElements": [
+          {
+            "id": "logo",
+            "src": "/screenshots/{locale}/logo.png",
+            "transform": { "x": 0, "y": 0, "width": 100, "height": 100 }
+          }
+        ]
+      }
+    ],
+    "android-10": [
+      {
+        "id": "slide-tablet",
+        "layout": "split-landscape",
+        "label": { "en": "TABLET" },
+        "headline": { "en": "Wide" },
+        "screenshot": ""
+      }
+    ]
+  },
+  "crossScreenMockupsByDevice": {
+    "iphone": ["/screenshots/mockup.png"]
+  }
+}

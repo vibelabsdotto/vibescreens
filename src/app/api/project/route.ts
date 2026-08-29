@@ -1,64 +1,57 @@
-import { promises as fs } from "node:fs";
-import path from "node:path";
 import { NextResponse } from "next/server";
-import { rejectCrossSiteWrite } from "@/lib/request-guard";
+
+import { rejectCrossSiteWrite } from "../../../lib/request-guard";
+import {
+  apiErrorResponse,
+  projectIdFromRequest,
+  readJsonBody,
+  requireJsonObject,
+} from "../../../lib/server-http";
+import {
+  createWorkspaceProjectService,
+  type WorkspaceProjectService,
+} from "../../../lib/server-service";
 
 export const dynamic = "force-dynamic";
 
-const PROJECT_FILE = "vibescreens.json";
-const LEGACY_PROJECT_FILE = "app-store-screenshots.json";
+export function createProjectRouteHandlers(service: WorkspaceProjectService) {
+  return {
+    async GET(request: Request) {
+      try {
+        const projectId = projectIdFromRequest(request);
+        const project = await service.getProject(projectId);
+        return NextResponse.json({ ok: true, project });
+      } catch (error) {
+        return apiErrorResponse(error);
+      }
+    },
 
-function filePath(fileName = PROJECT_FILE) {
-  return path.join(process.cwd(), fileName);
+    async PUT(request: Request) {
+      const blocked = rejectCrossSiteWrite(request);
+      if (blocked !== null) {
+        return NextResponse.json(
+          { ok: false, code: "write_rejected", error: blocked.error },
+          { status: blocked.status },
+        );
+      }
+
+      try {
+        const projectId = projectIdFromRequest(request);
+        const body = requireJsonObject(await readJsonBody(request));
+        const project = await service.saveProject({
+          projectId,
+          baseRevision: body.baseRevision as number,
+          document: body.document as never,
+        });
+        return NextResponse.json({ ok: true, project });
+      } catch (error) {
+        return apiErrorResponse(error);
+      }
+    },
+  };
 }
 
-async function readProjectFile() {
-  try {
-    return await fs.readFile(filePath(), "utf8");
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") throw e;
-    return fs.readFile(filePath(LEGACY_PROJECT_FILE), "utf8");
-  }
-}
+const handlers = createProjectRouteHandlers(createWorkspaceProjectService());
 
-export async function GET() {
-  try {
-    const raw = await readProjectFile();
-    const parsed = JSON.parse(raw);
-    return NextResponse.json({ ok: true, state: parsed });
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
-      return NextResponse.json({ ok: true, state: null });
-    }
-    return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : String(e) },
-      { status: 500 },
-    );
-  }
-}
-
-export async function POST(req: Request) {
-  // This route OVERWRITES a git-tracked file. See lib/request-guard.ts.
-  const blocked = rejectCrossSiteWrite(req);
-  if (blocked) {
-    return NextResponse.json({ ok: false, error: blocked.error }, { status: blocked.status });
-  }
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
-  }
-  try {
-    const pretty = JSON.stringify(body, null, 2) + "\n";
-    await fs.writeFile(filePath(), pretty, "utf8");
-    return NextResponse.json({ ok: true });
-  } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : String(e) },
-      { status: 500 },
-    );
-  }
-}
+export const GET = handlers.GET;
+export const PUT = handlers.PUT;
