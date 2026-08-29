@@ -1,35 +1,50 @@
 # VibeScreens
 
-VibeScreens is a skill for AI coding agents that scaffolds a production-ready Next.js editor for App Store, Microsoft Store, and Google Play marketing screenshots. It includes a connected canvas, real device frames, inspector controls, persistent project state, and one-click export bundles at store-ready sizes.
+VibeScreens is a skill for AI coding agents that scaffolds a Next.js editor for App Store, Microsoft Store, and Google Play marketing screenshots. One local editor can manage several projects, apps, named versions, device decks, and locales without restarting the dev server.
 
 ![Current connected-canvas editor showing a Bloom screenshot deck](example.png)
 
 Example screenshots generated with this skill were accepted for [Bloom Coffee Shelf Recipe on the App Store](https://apps.apple.com/us/app/bloom-coffee-shelf-recipe/id6759914524).
 
-## What It Does
+## What it does
 
 - Builds a full screenshot editor instead of a static one-off page
-- Turns raw app captures into ad-style slides with big readable copy
+- Turns raw app captures into ad-style slides with big, readable copy
 - Lets phones, captions, and decorative elements span adjacent screenshots on one connected canvas
-- Keeps older projects safe with isolated-screen export mode until you opt into connected crops
-- Saves every deck to `vibescreens.json`, so the project is git-trackable and resumable
-- Uploads picked screenshots into `public/screenshots/uploaded/<hash>.png`
-- Supports iOS, iPad, Android phone, Android tablet, macOS, Windows, and Play Store feature graphic decks
+- Keeps projects, apps, versions, decks, and slides in one local workspace
+- Makes published versions read-only; further edits start from a draft clone
+- Saves schema-v3 project documents under `.vibescreens/projects/<projectId>/vibescreens.json`
+- Stores uploaded assets by SHA-256 under `public/vibescreens-assets/<projectId>/<appId>/<versionId>/`
 - Exports PNG bundles at common App Store, Microsoft Store, and Google Play sizes
-- Supports locales, RTL-aware copy/layout guidance, reusable themes, and in-place project migration
+- Supports locales, RTL-aware copy and layout guidance, reusable themes, and non-destructive legacy migration
 
-## Current Editor UI
+## Editor workflow
 
-- **Connected canvas** - view the whole screenshot strip at once, drag elements across screen boundaries, then export each screen as a precise crop.
-- **Isolated mode** - preserve legacy decks where offscreen elements should not leak into neighboring exports.
-- **Screen sidebar** - add, select, and drag-to-reorder screens with live thumbnails.
-- **Inspector** - edit layout, labels, headlines, screenshots, element stacking, and transforms from the right panel.
-- **Platform switcher** - keep iOS, Android, and Desktop decks side by side while sharing the same editor workflow.
-- **Device selector** - design for iPhone, iPad, Android phone, Android tablets, macOS, Windows, and feature graphic formats.
-- **Autosave** - writes to disk through `/api/project` and mirrors to `localStorage` for instant reloads.
-- **Export bundle** - downloads a zip organized by platform, device, resolution, and locale.
+- **Project switcher.** Create, rename, delete, and switch projects without reloading the page.
+- **App and version switchers.** Keep several apps and named releases in one project. Drafts are editable; published versions are locked.
+- **Connected canvas.** View the whole screenshot strip, drag elements across screen boundaries, then export each screen as a precise crop.
+- **Isolated mode.** Preserve legacy decks where offscreen elements must not appear in neighboring exports.
+- **Screen sidebar.** Add, select, and reorder screens with live thumbnails.
+- **Inspector.** Edit copy, layouts, screenshots, stacking, and transforms.
+- **Deck controls.** Select one device, orientation, and locale deck inside the active version.
+- **Autosave.** Save the active project with revision checks. `localStorage` is a cache, not the durable source of truth.
+- **Export bundle.** Download a zip organized by app, version, status, platform, device, orientation, locale, and resolution.
 
 Tip: when capturing source iPhone screenshots, the 6.1-inch simulator is usually the easiest starting point because it reduces manual image adjustment inside the frames.
+
+## Supported devices
+
+- **iPhone** (portrait) - Apple App Store
+- **iPad** (portrait) - Apple App Store
+- **Apple TV** (landscape) - Apple App Store
+- **Apple Watch** (portrait) - Apple App Store
+- **CarPlay** (landscape) - exports into an **iPhone** slot
+- **Android Phone** (portrait) - Google Play
+- **Android Tablet 7"** (portrait and landscape) - Google Play
+- **Android Tablet 10"** (portrait and landscape) - Google Play
+- **Feature Graphic** (1024 x 500 banner) - Google Play store listing header
+- **macOS** (16:10 desktop window) - Mac App Store and product listings
+- **Windows** (16:9 desktop window) - Microsoft Store and product listings
 
 ## Install
 
@@ -58,7 +73,7 @@ This works with Claude Code, Cursor, Windsurf, OpenCode, Codex, and other agents
 ```bash
 git clone https://github.com/vibelabsdotto/vibescreens.git
 mkdir -p ~/.claude/skills
-cp -R vibescreens/skills/vibescreens ~/.claude/skills/vibescreens
+cp -R vibescreens/skill ~/.claude/skills/vibescreens
 ```
 
 ## Usage
@@ -69,92 +84,86 @@ Once installed, ask your coding agent for store screenshots:
 Build App Store and Google Play screenshots for my app.
 ```
 
-The skill guides the agent to ask for your app context, source screenshots, platforms, locales, visual direction, and slide count before generating the editor project.
+The skill guides the agent through workspace discovery, app context, source screenshots, platforms, locales, visual direction, and slide count. In an existing VibeScreens workspace, name the project, app, and version you want to change. If you omit them, the agent uses the saved active selection.
 
-## Example Prompts
+## Example prompts
 
 ```text
-Build App Store screenshots for my habit tracker.
+Create a VibeScreens project for my habit tracker.
 The app helps people stay consistent with simple daily routines.
-I want 6 slides, clean minimal style, warm neutrals, and a calm premium feel.
+I want 6 iPhone slides, warm neutrals, and a calm premium feel.
 ```
 
 ```text
-Generate App Store screenshots for my personal finance app.
-The main strengths are fast expense capture, clear monthly trends, and shared budgets.
-I want a sharp modern style with high contrast and 7 slides.
+Add Android launch screenshots for version 2.4 of my finance app.
+Use the current iOS version as the starting point, but adapt the copy and frames for Google Play.
 ```
 
 ```text
-Build App Store screenshots for my language learning app.
-I need English, German, and Arabic screenshot sets.
-Use two reusable themes: clean-light and dark-bold.
-Make sure Arabic slides feel RTL-native, not just translated.
+Clone the published 2.4 Launch version as a draft named 2.5 Spring.
+Keep the existing assets, then update the first two headlines.
 ```
 
-## Better Prompt Tips
+```text
+Build English, German, and Arabic decks for my language learning app.
+Make the Arabic deck feel RTL-native, not just translated.
+```
 
+## Better prompt tips
+
+- Name the target project, app, and version when the workspace contains more than one
 - Say what the app does in one sentence
-- List the top 3-5 features in priority order
-- Mention the platforms and devices you need
-- Describe the visual style you want
-- Say how many slides you want
+- List the top features in priority order
+- Mention the devices and orientations you need
+- Describe the visual style and slide count
 - Mention required locales or RTL languages
-- Provide source screenshot paths, app icon, and style references when available
+- Provide source screenshot paths, an app icon, and style references when available
+- Say whether the result should remain a draft or be published after review
 
-## What Gets Scaffolded
+## What gets scaffolded
 
-If starting from an empty folder, the skill creates a Next.js project like this:
+A new VibeScreens folder has one runtime and a workspace that grows as projects are added:
 
 ```text
 project/
+├── .vibescreens/
+│   ├── workspace.json
+│   ├── projects/
+│   │   └── <projectId>/
+│   │       └── vibescreens.json
+│   ├── backups/
+│   └── trash/
 ├── public/
 │   ├── mockup.png
-│   ├── app-icon.png
-│   └── screenshots/
-│       ├── apple/
-│       │   ├── iphone/{locale}/01.png
-│       │   └── ipad/{locale}/01.png
-│       └── android/
-│           ├── phone/{locale}/01.png
-│           ├── tablet-7/portrait/{locale}/01.png
-│           ├── tablet-10/landscape/{locale}/01.png
-│           └── feature-graphic/{locale}/01.png
-├── vibescreens.json
+│   └── vibescreens-assets/
+│       └── <projectId>/<appId>/<versionId>/<kind>/<sha256>.<ext>
 ├── src/app/
 │   ├── layout.tsx
 │   └── page.tsx
 ├── src/components/editor/
-│   ├── screenshot-editor.tsx
-│   ├── toolbar.tsx
-│   ├── sidebar.tsx
-│   ├── inspector.tsx
-│   ├── preview-stage.tsx
-│   ├── slide-canvas.tsx
-│   ├── screenshot-picker.tsx
-│   └── device-frames.tsx
 └── src/lib/
-    ├── constants.ts
-    ├── defaults.ts
-    ├── storage.ts
-    ├── image-cache.ts
-    └── types.ts
 ```
 
-The template README inside `skills/vibescreens/template/README.md` documents the editor internals in more detail.
+`workspace.json` stores project metadata, order, and `activeProjectId`. Each `vibescreens.json` stores one complete schema-v3 document. It contains ordered apps; each app contains ordered versions; each version contains ordered device, orientation, and locale decks; each deck contains slides.
 
-## Editor Workflow
+The template README at [`docs/template-README.md`](docs/template-README.md) links to the full apps, versions, migration, and schema documentation.
 
-1. Capture real app screenshots from a simulator, emulator, or device.
-2. Ask your agent to scaffold or migrate the screenshot project.
-3. Run the dev server and open the editor.
-4. Use the sidebar to organize screens and the inspector to edit copy, layouts, screenshots, and elements.
-5. Choose Connected or Isolated mode depending on whether elements should cross screen boundaries.
-6. Click **Export bundle** to download store-ready PNGs.
+## Working with versions
 
-Uploaded files are saved under `public/screenshots/uploaded/`, and the canonical deck state is saved in `vibescreens.json`. Commit both to make the deck reproducible after a fresh clone.
+1. Edit a draft version.
+2. Review every deck and export a proof bundle.
+3. Publish the draft to lock its content and record its content hash.
+4. Clone a published version when a later release needs changes. The clone gets a new version ID and starts as a draft.
 
-## Export Sizes
+A VibeScreens version is a screenshot release, not a Git branch. Git tracks the editor project and its durable assets. App/version switching happens inside the running editor.
+
+## Legacy migration and recovery
+
+When `.vibescreens/workspace.json` is absent, the importer checks root `vibescreens.json` first and `app-store-screenshots.json` second. It determines the schema from the file contents, creates one project with one app and one draft version, copies referenced assets into the scoped asset tree, and only then updates the workspace registry.
+
+The importer keeps the root legacy file unchanged and records a hashed backup under `.vibescreens/backups/`. A schema newer than v3 opens read-only instead of being downgraded. See [apps and versions](docs/apps-and-versions.md) and [project schema v3](docs/project-schema-v3.md) for recovery details.
+
+## Export sizes
 
 ### Apple App Store
 
@@ -178,41 +187,41 @@ Uploaded files are saved under `public/screenshots/uploaded/`, and the canonical
 
 Screenshots are designed at the largest size for each platform and scaled down for smaller exports. Android frames are CSS-rendered, while iPhone uses the included `mockup.png` bezel.
 
-## Project State
+## Persistence model
 
-- `vibescreens.json` is the source of truth for app name, active platform, active device, locales, theme, connected-canvas mode, slides, screenshot paths, and transforms.
-- Existing projects that only have `app-store-screenshots.json` remain compatible. The editor reads the legacy file when `vibescreens.json` is absent, then writes future saves to `vibescreens.json`.
-- Runtime uploads are written to `public/screenshots/uploaded/<hash>.png`.
-- The editor reads `localStorage` first for fast paint, then reconciles with the project file.
-- Older project files are migrated to schema v2 on load while keeping legacy decks isolated unless connected mode was already enabled.
-- Custom themes live in `src/lib/constants.ts`; unknown theme ids fall back to `clean-light`.
+- `.vibescreens/workspace.json` is the workspace registry. It does not duplicate app, version, deck, or slide state.
+- `.vibescreens/projects/<projectId>/vibescreens.json` is the durable source of truth for that project's schema-v3 document and numeric revision.
+- `public/vibescreens-assets/<projectId>/<appId>/<versionId>/` owns files for a specific version. Paths use generated IDs and SHA-256 filenames.
+- Every successful project mutation increments only that project's revision. A stale write receives `409` instead of overwriting newer work.
+- `localStorage` may speed up initial paint or preserve a conflict draft, but it never outranks the project document.
+- Legacy root state files stay untouched after import so rollback remains possible.
 
-## Design Standards
+## Design standards
 
 - Screenshots are ads, not documentation
-- Each slide should sell one clear user outcome
-- Headlines should pass the one-second thumbnail test
-- Adjacent slides should vary layout and device placement
-- Cross-screen elements should never split required text or critical UI
-- Exported crops must still work as standalone screenshots
+- Each slide sells one clear user outcome
+- Headlines pass the one-second thumbnail test
+- Adjacent slides vary layout and device placement
+- Cross-screen elements never split required text or critical UI
+- Exported crops still work as standalone screenshots
 
-## Tech Stack
+## Tech stack
 
 | Dependency | Purpose |
 |------------|---------|
-| Next.js | Dev server and app shell |
-| React | Editor UI |
-| TypeScript | Project and slide state safety |
+| Next.js 16 | Dev server and app shell |
+| React 19 | Editor UI |
+| TypeScript | Workspace and project state safety |
 | Tailwind CSS | Styling |
-| shadcn/ui + Radix | Controls, dialogs, selects, tooltips |
-| html-to-image | Exact PNG rendering |
+| shadcn/ui + Radix | Controls, dialogs, selects, and tooltips |
+| html-to-image | PNG rendering |
 | JSZip | Bundle downloads |
 | dnd-kit | Screen reordering |
 | react-rnd | Draggable and resizable canvas elements |
 
 ## Requirements
 
-- Node.js 18+
+- Node.js 20.9+
 - One of bun, pnpm, yarn, or npm
 
 ## Contributing

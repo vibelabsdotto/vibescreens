@@ -52,9 +52,17 @@ Thumbs.db
 .agents/
 skills-lock.json
 
-# Skill template user assets
-skills/vibescreens/template/public/app-icon.png
-skills/vibescreens/template/public/screenshots/**/*.png
+# User-uploaded screenshots land here at runtime. They are the user's assets,
+# not template content, and must never be committed back.
+public/screenshots/uploaded/
+
+# Local workspace state. Projects can be shared deliberately by force-adding
+# their JSON and referenced public/vibescreens-assets, but runtime state must
+# not enter the template accidentally.
+.vibescreens/
+
+# Legacy layout (app used to live under skills/vibescreens/template/)
+skills/
 
 # Temporary files
 *.tmp

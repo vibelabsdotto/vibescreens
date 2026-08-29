@@ -5,7 +5,7 @@ Thanks for contributing to VibeScreens.
 This repository is intentionally small, but changes still affect real agent behavior. Most contributions here change either:
 
 - `README.md`: how humans discover and install the skill
-- `skills/vibescreens/SKILL.md`: how coding agents actually behave
+- `skill/SKILL.md`: how coding agents actually behave
 
 ## What Makes a Good Contribution
 
@@ -34,12 +34,19 @@ Usually not a fit:
 ## Before Opening a PR
 
 1. Check open PRs to avoid overlapping work.
-2. Read both `README.md` and `skills/vibescreens/SKILL.md`.
+2. Read both `README.md` and `skill/SKILL.md`.
 3. Keep user-facing docs and skill behavior aligned when applicable.
 
 ## Testing Changes
 
-There is no traditional automated test suite in this repository, so use a manual smoke-test checklist.
+The editor ships an automated suite (Vitest + TypeScript). Run it from the repository root:
+
+```bash
+npm install       # once
+npm test          # Vitest suite
+npm run typecheck # tsc --noEmit
+npm run build     # production build
+```
 
 ### For README-only changes
 
