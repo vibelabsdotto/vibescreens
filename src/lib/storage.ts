@@ -8,7 +8,7 @@ import {
 } from "react";
 
 import { DEFAULT_PROJECT } from "./defaults";
-import type { AppId, DeckId, VersionId } from "./ids";
+import type { DeckId, VersionId } from "./ids";
 import {
   applyEditorStateToProjectDocument,
   projectDocumentToEditorState,
@@ -224,7 +224,6 @@ export function useProject() {
           name: next.name,
           revision: next.revision,
           updatedAt: next.updatedAt,
-          appCount: next.appOrder.length,
         };
         const index = current.findIndex(
           (entry) => entry.projectId === next.projectId,
@@ -760,7 +759,6 @@ export function useProject() {
                     name: response.project.name,
                     revision: response.project.revision,
                     updatedAt: response.project.updatedAt,
-                    appCount: response.project.appOrder.length,
                   }
                 : entry,
             ),
@@ -849,45 +847,11 @@ export function useProject() {
     ],
   );
 
-  const createApp = useCallback(
-    (name: string, versionName?: string) =>
-      runProjectCommand((current) => ({
-        action: "createApp",
-        baseRevision: current.revision,
-        name,
-        versionName,
-        initialDeck: deckInputFromEditorState(editorStateRef.current),
-      })),
-    [runProjectCommand],
-  );
-
-  const renameApp = useCallback(
-    (appId: AppId, name: string) =>
-      runProjectCommand((current) => ({
-        action: "renameApp",
-        baseRevision: current.revision,
-        appId,
-        name,
-      })),
-    [runProjectCommand],
-  );
-
-  const deleteApp = useCallback(
-    (appId: AppId) =>
-      runProjectCommand((current) => ({
-        action: "deleteApp",
-        baseRevision: current.revision,
-        appId,
-      })),
-    [runProjectCommand],
-  );
-
   const createVersion = useCallback(
-    (appId: AppId, name: string) =>
+    (name: string) =>
       runProjectCommand((current) => ({
         action: "createVersion",
         baseRevision: current.revision,
-        appId,
         name,
         initialDeck: deckInputFromEditorState(editorStateRef.current),
       })),
@@ -895,11 +859,10 @@ export function useProject() {
   );
 
   const cloneVersion = useCallback(
-    (appId: AppId, sourceVersionId: VersionId, name: string) =>
+    (sourceVersionId: VersionId, name: string) =>
       runProjectCommand((current) => ({
         action: "cloneVersion",
         baseRevision: current.revision,
-        appId,
         sourceVersionId,
         name,
       })),
@@ -907,11 +870,10 @@ export function useProject() {
   );
 
   const renameVersion = useCallback(
-    (appId: AppId, versionId: VersionId, name: string) =>
+    (versionId: VersionId, name: string) =>
       runProjectCommand((current) => ({
         action: "renameVersion",
         baseRevision: current.revision,
-        appId,
         versionId,
         name,
       })),
@@ -919,33 +881,30 @@ export function useProject() {
   );
 
   const publishVersion = useCallback(
-    (appId: AppId, versionId: VersionId) =>
+    (versionId: VersionId) =>
       runProjectCommand((current) => ({
         action: "publishVersion",
         baseRevision: current.revision,
-        appId,
         versionId,
       })),
     [runProjectCommand],
   );
 
   const deleteVersion = useCallback(
-    (appId: AppId, versionId: VersionId) =>
+    (versionId: VersionId) =>
       runProjectCommand((current) => ({
         action: "deleteVersion",
         baseRevision: current.revision,
-        appId,
         versionId,
       })),
     [runProjectCommand],
   );
 
   const createDeck = useCallback(
-    (appId: AppId, versionId: VersionId, deck: DeckInput) =>
+    (versionId: VersionId, deck: DeckInput) =>
       runProjectCommand((current) => ({
         action: "createDeck",
         baseRevision: current.revision,
-        appId,
         versionId,
         deck,
       })),
@@ -954,7 +913,6 @@ export function useProject() {
 
   const updateDeck = useCallback(
     (
-      appId: AppId,
       versionId: VersionId,
       deckId: DeckId,
       changes: Partial<Omit<DeckRecord, "id">>,
@@ -962,7 +920,6 @@ export function useProject() {
       runProjectCommand((current) => ({
         action: "updateDeck",
         baseRevision: current.revision,
-        appId,
         versionId,
         deckId,
         changes,
@@ -971,28 +928,25 @@ export function useProject() {
   );
 
   const deleteDeck = useCallback(
-    (appId: AppId, versionId: VersionId, deckId: DeckId) =>
+    (versionId: VersionId, deckId: DeckId) =>
       runProjectCommand((current) => ({
         action: "deleteDeck",
         baseRevision: current.revision,
-        appId,
         versionId,
         deckId,
       })),
     [runProjectCommand],
   );
 
-  const selectAppVersion = useCallback(
+  const selectVersion = useCallback(
     (
-      appId: AppId,
       versionId: VersionId,
       deckId?: DeckId,
       slideId?: string,
     ) =>
       runProjectCommand((current) => ({
-        action: "selectAppVersion",
+        action: "selectVersion",
         baseRevision: current.revision,
-        appId,
         versionId,
         deckId,
         slideId,
@@ -1002,7 +956,6 @@ export function useProject() {
 
   const selectDeck = useCallback(
     (
-      appId: AppId,
       versionId: VersionId,
       deckId: DeckId,
       slideId?: string,
@@ -1010,7 +963,6 @@ export function useProject() {
       runProjectCommand((current) => ({
         action: "selectDeck",
         baseRevision: current.revision,
-        appId,
         versionId,
         deckId,
         slideId,
@@ -1075,9 +1027,6 @@ export function useProject() {
     switchProject,
     renameProject,
     deleteProject,
-    createApp,
-    renameApp,
-    deleteApp,
     createVersion,
     cloneVersion,
     cloneToDraft: cloneVersion,
@@ -1087,7 +1036,7 @@ export function useProject() {
     createDeck,
     updateDeck,
     deleteDeck,
-    selectAppVersion,
+    selectVersion,
     selectDeck,
   };
 }

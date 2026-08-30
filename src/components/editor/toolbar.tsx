@@ -25,10 +25,12 @@ import {
   THEMES,
 } from "@/lib/constants";
 import { detectPlatform } from "@/lib/defaults";
+import type { VersionId } from "@/lib/ids";
 import type { ProjectDocumentV3 } from "@/lib/project-schema";
 import type { Device, ImportedFont, Orientation, Platform, ScreenshotFontId } from "@/lib/types";
+import type { ProjectId } from "@/lib/workspace";
 import { FontImporter } from "./font-importer";
-import { getResetDeckActions } from "./toolbar-contract";
+import { getResetDeckActions, getSelectableLocales } from "./toolbar-contract";
 
 type Props = {
   appName: string;
@@ -40,6 +42,10 @@ type Props = {
   fontId: ScreenshotFontId;
   setFontId: (v: ScreenshotFontId) => void;
   importedFont?: ImportedFont;
+  projectId: ProjectId;
+  versionId: VersionId;
+  onBeforeUpload: () => Promise<void>;
+  onUploadStateChange: (uploading: boolean) => void;
   setImportedFont: (font: ImportedFont) => void;
   locale: string;
   setLocale: (v: string) => void;
@@ -81,10 +87,9 @@ export function Toolbar(props: Props) {
     if (props.busy) setResetOpen(false);
   }, [props.busy]);
 
-  const showLocale = props.locales.length > 1;
-
   const deviceLabel = DEVICE_LABEL[props.device];
   const resetActions = getResetDeckActions(deviceLabel);
+  const selectableLocales = getSelectableLocales(props.locales);
   const themes = Object.values(THEMES);
 
   return (
@@ -154,6 +159,10 @@ export function Toolbar(props: Props) {
         <FontImporter
           disabled={props.busy}
           importedFont={props.importedFont}
+          projectId={props.projectId}
+          versionId={props.versionId}
+          onBeforeUpload={props.onBeforeUpload}
+          onUploadStateChange={props.onUploadStateChange}
           onImported={props.setImportedFont}
           onUploaded={props.onUploadReconciled}
         />
@@ -228,20 +237,18 @@ export function Toolbar(props: Props) {
         </Select>
       )}
 
-      {showLocale && (
-        <Select value={props.locale} onValueChange={props.setLocale} disabled={props.busy}>
-          <SelectTrigger className="h-8 w-20 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {props.locales.map((l) => (
-              <SelectItem key={l} value={l}>
-                {l.toUpperCase()}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      )}
+      <Select value={props.locale} onValueChange={props.setLocale} disabled={props.busy}>
+        <SelectTrigger className="h-8 w-20 text-xs" aria-label="Screenshot language">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {selectableLocales.map((locale) => (
+            <SelectItem key={locale} value={locale}>
+              {locale.toUpperCase()}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
 
       <div className="ml-auto flex shrink-0 items-center gap-2">
         <SaveStatus savedAt={props.savedAt} saveError={props.saveError} />

@@ -12,7 +12,6 @@ import { ProjectSchemaError } from "./project-schema";
 import { assertProjectId, WorkspaceRevisionConflictError, type ProjectId } from "./workspace";
 import {
   OrphanedProjectError,
-  PartialWorkspaceCommitError,
   ProjectNotRegisteredError,
   WorkspaceProjectLimitError,
   WorkspaceSchemaError,
@@ -154,13 +153,6 @@ export function apiErrorResponse(error: unknown): NextResponse {
       { status: 400 },
     );
   }
-  if (error instanceof PartialWorkspaceCommitError) {
-    return NextResponse.json(
-      { ok: false, code: "partial_commit", error: error.message },
-      { status: 500 },
-    );
-  }
-
   return NextResponse.json(
     {
       ok: false,

@@ -4,6 +4,7 @@ import type { AppId, DeckId, VersionId } from "../ids";
 import {
   ProjectSchemaError,
   UnsupportedProjectSchemaVersionError,
+  assetIdFor,
   normalizeProjectDocument,
   validateProjectDocument,
   type ProjectDocumentV3,
@@ -69,7 +70,18 @@ function makeDocument(): ProjectDocumentV3 {
   };
 }
 
-describe("project schema v3", () => {
+describe("project schema", () => {
+  it("uses the complete version identity in deterministic asset IDs", () => {
+    const hash = "a".repeat(64);
+    const first = assetIdFor("ver_abcdefghijklA" as VersionId, "image", hash, "png");
+    const second = assetIdFor("ver_abcdefghijklB" as VersionId, "image", hash, "png");
+
+    expect(first).not.toBe(second);
+    expect(assetIdFor(versionA, "image", hash, "abcdefg")).not.toBe(
+      assetIdFor(versionA, "image", hash, "abcdefh"),
+    );
+  });
+
   it("validates top-level scoped asset refs and published reference reachability", () => {
     const document = makeDocument();
     const version = document.appsById[appA].versionsById[versionA];

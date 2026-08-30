@@ -212,12 +212,13 @@ describe("legacy project migration", () => {
     temporaryDirectories.push(root);
     vi.spyOn(process, "cwd").mockReturnValue(root);
 
-    const localFiles: Record<string, string> = {
-      "public/app-icon.png": "icon bytes",
-      "public/fonts/imported/custom.woff2": "font bytes",
-      "public/screenshots/de/phone.png": "phone bytes",
-      "public/screenshots/de/logo.png": "logo bytes",
-      "public/screenshots/mockup.png": "mockup bytes",
+    const pngBytes = Buffer.from("89504e470d0a1a0a00000000", "hex");
+    const localFiles: Record<string, Buffer> = {
+      "public/app-icon.png": pngBytes,
+      "public/fonts/imported/custom.woff2": Buffer.from("774f463200000000", "hex"),
+      "public/screenshots/de/phone.png": pngBytes,
+      "public/screenshots/de/logo.png": pngBytes,
+      "public/screenshots/mockup.png": pngBytes,
     };
     for (const [path, contents] of Object.entries(localFiles)) {
       const absolutePath = join(root, path);
@@ -256,7 +257,7 @@ describe("legacy project migration", () => {
           kind: "screenshot",
           originalName: "phone.png",
           mime: "image/png",
-          bytes: Buffer.byteLength("phone bytes"),
+          bytes: pngBytes.byteLength,
           sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
           extension: "png",
           url: selectedSlide.screenshot,
@@ -282,7 +283,7 @@ describe("legacy project migration", () => {
 
     const iconUrl = selectedDeck.appIcon;
     await expect(readFile(join(root, "public", iconUrl.slice(1)))).resolves.toEqual(
-      Buffer.from("icon bytes"),
+      pngBytes,
     );
 
     const repeated = await materializeLegacyAssets(materialized, {

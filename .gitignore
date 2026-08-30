@@ -55,10 +55,10 @@ skills-lock.json
 # User-uploaded screenshots land here at runtime. They are the user's assets,
 # not template content, and must never be committed back.
 public/screenshots/uploaded/
+public/vibescreens-assets/
 
-# Local workspace state. Projects can be shared deliberately by force-adding
-# their JSON and referenced public/vibescreens-assets, but runtime state must
-# not enter the template accidentally.
+# Local SQLite workspace state. Projects can be shared deliberately by
+# exporting a bundle, but runtime state must not enter the template accidentally.
 .vibescreens/
 
 # Legacy layout (app used to live under skills/vibescreens/template/)

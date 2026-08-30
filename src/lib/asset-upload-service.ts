@@ -1,6 +1,9 @@
 import { storeAsset as storeManagedAsset, type StoreAssetInput } from "./asset-store";
 import { assertAppId, assertVersionId, type AppId, type VersionId } from "./ids";
-import { PublishedVersionMutationError } from "./project-repository";
+import {
+  ProjectRevisionConflictError,
+  PublishedVersionMutationError,
+} from "./project-repository";
 import {
   assetIdFor,
   parseManagedAssetUrl,
@@ -172,7 +175,7 @@ export function createAssetUploadService(
         projectId = input.projectId;
       }
 
-      const current = await projectService.getProject(projectId);
+      let current = await projectService.getProject(projectId);
       if (current.projectId !== projectId) {
         throw new TypeError(`Loaded project ${current.projectId} does not match ${projectId}`);
       }
@@ -198,14 +201,32 @@ export function createAssetUploadService(
       });
       assertStoredAssetOwnership(asset, projectId, appId, versionId, input.kind);
 
-      const candidate = structuredClone(current);
-      candidate.assetsById[asset.id] = asset;
-      const saved = await projectService.saveProject({
-        projectId,
-        baseRevision: current.revision,
-        document: candidate,
-      });
-      return { asset: registeredAsset(saved, asset), project: saved };
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const candidate = structuredClone(current);
+        candidate.assetsById[asset.id] = asset;
+        try {
+          const saved = await projectService.saveProject({
+            projectId,
+            baseRevision: current.revision,
+            document: candidate,
+          });
+          return { asset: registeredAsset(saved, asset), project: saved };
+        } catch (error) {
+          if (!(error instanceof ProjectRevisionConflictError) || attempt === 2) throw error;
+          current = await projectService.getProject(projectId);
+          const latestAppId = targetAppId(current, appId);
+          const latestVersionId = targetVersionId(current, latestAppId, versionId);
+          if (latestAppId !== appId || latestVersionId !== versionId) {
+            throw new TypeError("Upload target changed during concurrent registration");
+          }
+          if (current.appsById[appId].versionsById[versionId].status !== "draft") {
+            throw new PublishedVersionMutationError(
+              `Published version ${versionId} cannot receive uploaded assets`,
+            );
+          }
+        }
+      }
+      throw new Error("Upload registration exhausted its retry budget");
     },
   };
 }

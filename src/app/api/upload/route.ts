@@ -108,11 +108,19 @@ export function createUploadRouteHandlers(service: AssetUploadService) {
             "invalid_image_content",
           );
         }
+        const projectId = optionalString(body, "projectId");
+        const versionId = optionalString(body, "versionId");
+        if (projectId === undefined || versionId === undefined) {
+          throw new HttpRequestError(
+            400,
+            "projectId and versionId are required",
+            "invalid_target",
+          );
+        }
 
         const result = await service.uploadAsset({
-          projectId: optionalString(body, "projectId"),
-          appId: optionalString(body, "appId"),
-          versionId: optionalString(body, "versionId"),
+          projectId,
+          versionId,
           kind: imageKind(body.kind),
           extension: MIME_EXT[parsed.mime],
           originalName: plainFilename(optionalString(body, "fileName")),
@@ -122,7 +130,7 @@ export function createUploadRouteHandlers(service: AssetUploadService) {
         return NextResponse.json({
           ok: true,
           path: result.asset.url,
-          asset: result.asset,
+          project: result.project,
           revision: result.project.revision,
         });
       } catch (error) {

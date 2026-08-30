@@ -67,7 +67,6 @@ describe("core workspace/project routes", () => {
           name: "Route Project",
           revision: 4,
           updatedAt: project.updatedAt,
-          appCount: 2,
         },
       ],
     }));
@@ -79,7 +78,7 @@ describe("core workspace/project routes", () => {
     await expect(response.json()).resolves.toEqual({
       ok: true,
       workspace,
-      projects: [expect.objectContaining({ projectId, appCount: 2 })],
+      projects: [expect.objectContaining({ projectId })],
     });
   });
 

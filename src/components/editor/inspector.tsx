@@ -38,6 +38,7 @@ import {
 } from "@/lib/elements";
 import { pickText, writeLocalized } from "@/lib/locale";
 import { img as cachedImage } from "@/lib/image-cache";
+import type { VersionId } from "@/lib/ids";
 import type { ProjectDocumentV3 } from "@/lib/project-schema";
 import {
   cleanTypography,
@@ -58,6 +59,7 @@ import type {
   TextElement,
   Theme,
 } from "@/lib/types";
+import type { ProjectId } from "@/lib/workspace";
 import { BackgroundControls } from "./background-controls";
 import { ScreenshotPicker } from "./screenshot-picker";
 import { getCanvas, getElementTransform } from "./slide-canvas";
@@ -68,6 +70,10 @@ type Props = {
   orientation: Orientation;
   theme: Theme;
   locale: string;
+  projectId: ProjectId;
+  versionId: VersionId;
+  onBeforeUpload: () => Promise<void>;
+  onUploadStateChange: (uploading: boolean) => void;
   selectedElementId: ElementId | null;
   onChange: (patch: Partial<Slide>) => void;
   onSelectElement: (id: ElementId | null) => void;
@@ -87,6 +93,10 @@ export function Inspector({
   orientation,
   theme,
   locale,
+  projectId,
+  versionId,
+  onBeforeUpload,
+  onUploadStateChange,
   selectedElementId,
   onChange,
   onSelectElement,
@@ -195,6 +205,10 @@ export function Inspector({
               label="Primary"
               value={slide.screenshot}
               locale={locale}
+              projectId={projectId}
+              versionId={versionId}
+              onBeforeUpload={onBeforeUpload}
+              onUploadStateChange={onUploadStateChange}
               onChange={(v) => onChange({ screenshot: v })}
               onUploaded={onUploadReconciled}
             />
@@ -208,6 +222,10 @@ export function Inspector({
               label="Secondary (back layer)"
               value={slide.screenshotSecondary || ""}
               locale={locale}
+              projectId={projectId}
+              versionId={versionId}
+              onBeforeUpload={onBeforeUpload}
+              onUploadStateChange={onUploadStateChange}
               onChange={(v) => onChange({ screenshotSecondary: v })}
               onUploaded={onUploadReconciled}
             />
@@ -220,6 +238,10 @@ export function Inspector({
             device={device}
             orientation={orientation}
             locale={locale}
+            projectId={projectId}
+            versionId={versionId}
+            onBeforeUpload={onBeforeUpload}
+            onUploadStateChange={onUploadStateChange}
             selectedElementId={selectedElementId}
             onChange={onChange}
             onSelectElement={onSelectElement}
@@ -242,6 +264,10 @@ function ElementTransformControls({
   device,
   orientation,
   locale,
+  projectId,
+  versionId,
+  onBeforeUpload,
+  onUploadStateChange,
   selectedElementId,
   onChange,
   onSelectElement,
@@ -251,6 +277,10 @@ function ElementTransformControls({
   device: Device;
   orientation: Orientation;
   locale: string;
+  projectId: ProjectId;
+  versionId: VersionId;
+  onBeforeUpload: () => Promise<void>;
+  onUploadStateChange: (uploading: boolean) => void;
   selectedElementId: ElementId | null;
   onChange: (patch: Partial<Slide>) => void;
   onSelectElement: (id: ElementId | null) => void;
@@ -490,6 +520,10 @@ function ElementTransformControls({
           textElement={activeTextElement || undefined}
           imageElement={activeImageElement || undefined}
           locale={locale}
+          projectId={projectId}
+          versionId={versionId}
+          onBeforeUpload={onBeforeUpload}
+          onUploadStateChange={onUploadStateChange}
           onRotate={(rotation) => patchElement(activeId, { rotation })}
           onReorder={(dir) => reorder(activeId, dir)}
           onTextChange={(value) => {
@@ -524,6 +558,10 @@ function ActiveElementPanel({
   textElement,
   imageElement,
   locale,
+  projectId,
+  versionId,
+  onBeforeUpload,
+  onUploadStateChange,
   onRotate,
   onReorder,
   onTextChange,
@@ -538,6 +576,10 @@ function ActiveElementPanel({
   textElement?: TextElement;
   imageElement?: ImageElement;
   locale: string;
+  projectId: ProjectId;
+  versionId: VersionId;
+  onBeforeUpload: () => Promise<void>;
+  onUploadStateChange: (uploading: boolean) => void;
   onRotate: (rotation: number) => void;
   onReorder: (dir: "front" | "back" | "up" | "down") => void;
   onTextChange: (value: string) => void;
@@ -585,7 +627,15 @@ function ActiveElementPanel({
       )}
 
       {imageElement && (
-        <ImageElementPanel element={imageElement} onPatch={onImagePatch} onUploaded={onUploaded} />
+        <ImageElementPanel
+          element={imageElement}
+          projectId={projectId}
+          versionId={versionId}
+          onBeforeUpload={onBeforeUpload}
+          onUploadStateChange={onUploadStateChange}
+          onPatch={onImagePatch}
+          onUploaded={onUploaded}
+        />
       )}
 
       <div className="space-y-1">
@@ -633,10 +683,18 @@ function ActiveElementPanel({
 
 function ImageElementPanel({
   element,
+  projectId,
+  versionId,
+  onBeforeUpload,
+  onUploadStateChange,
   onPatch,
   onUploaded,
 }: {
   element: ImageElement;
+  projectId: ProjectId;
+  versionId: VersionId;
+  onBeforeUpload: () => Promise<void>;
+  onUploadStateChange: (uploading: boolean) => void;
   onPatch: (patch: Partial<ImageElement>) => void;
   onUploaded: (project: ProjectDocumentV3) => void;
 }) {
@@ -648,6 +706,10 @@ function ImageElementPanel({
           label="Overlay image"
           value={element.src}
           assetKind="image"
+          projectId={projectId}
+          versionId={versionId}
+          onBeforeUpload={onBeforeUpload}
+          onUploadStateChange={onUploadStateChange}
           onChange={(src) => onPatch({ src })}
           onUploaded={onUploaded}
         />

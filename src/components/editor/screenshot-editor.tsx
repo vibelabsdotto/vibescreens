@@ -76,15 +76,12 @@ export function ScreenshotEditor() {
     switchProject,
     renameProject,
     deleteProject,
-    createApp,
-    renameApp,
-    deleteApp,
     createVersion,
     cloneVersion,
     renameVersion,
     publishVersion,
     deleteVersion,
-    selectAppVersion,
+    selectVersion,
   } = useProject();
   const [activeSlideId, setActiveSlideId] = React.useState<string | null>(null);
   const [selectedElement, setSelectedElement] = React.useState<SelectedElement | null>(null);
@@ -96,6 +93,7 @@ export function ScreenshotEditor() {
   const [exportProgress, setExportProgress] = React.useState<ProjectExportProgress | null>(null);
   const [exportRunning, setExportRunning] = React.useState(false);
   const [exportFrame, setExportFrame] = React.useState<ExportRenderFrame | null>(null);
+  const [uploadsInFlight, setUploadsInFlight] = React.useState(0);
   const exportControllerRef = React.useRef<AbortController | null>(null);
   const exportRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -116,12 +114,16 @@ export function ScreenshotEditor() {
       : selectedApp.versionsById[project.selection.versionId];
   const publishedReadOnly = selectedVersion?.status === "published";
   const editorContentLocked = readOnly || conflict !== null;
-  const editorUiLocked = editorContentLocked || exportRunning || exportPlanning || loading;
+  const editorUiLocked =
+    editorContentLocked || exportRunning || exportPlanning || loading || uploadsInFlight > 0;
   const exportingLabel = exportRunning
     ? exportProgress === null
       ? "starting…"
       : `${exportProgress.completed}/${exportProgress.total}`
     : null;
+  const onUploadStateChange = React.useCallback((uploading: boolean) => {
+    setUploadsInFlight((current) => Math.max(0, current + (uploading ? 1 : -1)));
+  }, []);
 
   React.useEffect(() => {
     if (selectedElement && selectedElement.slideId !== activeSlide?.id) {
@@ -768,15 +770,7 @@ export function ScreenshotEditor() {
         onCreateProject={createProject}
         onRenameProject={renameProject}
         onDeleteProject={deleteProject}
-        onSelectApp={(appId) => {
-          const app = project?.appsById[appId];
-          const versionId = app?.versionOrder[0];
-          if (versionId !== undefined) return selectAppVersion(appId, versionId);
-        }}
-        onCreateApp={createApp}
-        onRenameApp={renameApp}
-        onDeleteApp={deleteApp}
-        onSelectVersion={(appId, versionId) => selectAppVersion(appId, versionId)}
+        onSelectVersion={selectVersion}
         onCreateVersion={createVersion}
         onCloneVersion={cloneVersion}
         onRenameVersion={renameVersion}
@@ -803,7 +797,7 @@ export function ScreenshotEditor() {
             <p className="mt-2 text-sm text-muted-foreground">
               {workspaceReadOnly
                 ? "This workspace cannot be edited with the current schema. Use the workspace status above to resolve the issue."
-                : "Use “Create your first project” in the workspace controls above. Your apps, versions, decks, and assets will stay isolated inside it."}
+                : "Use “Create your first project” in the workspace controls above. Its versions, decks, and assets will stay isolated inside it."}
             </p>
           </div>
         </main>
@@ -817,7 +811,7 @@ export function ScreenshotEditor() {
               <Lock className="h-4 w-4 shrink-0" aria-hidden />
               <p className="min-w-0 flex-1">
                 <span className="font-semibold">Published and immutable.</span>{" "}
-                {selectedApp.name} · {selectedVersion.name} is read-only. Clone it before editing.
+                {project.name} · {selectedVersion.name} is read-only. Clone it before editing.
               </p>
               <Button
                 type="button"
@@ -837,7 +831,7 @@ export function ScreenshotEditor() {
                     name = `${base} ${suffix}`;
                     suffix += 1;
                   }
-                  void cloneVersion(selectedApp.id, selectedVersion.id, name);
+                  void cloneVersion(selectedVersion.id, name);
                 }}
               >
                 Clone to draft
@@ -856,6 +850,10 @@ export function ScreenshotEditor() {
 
           <Toolbar
             appName={state.appName}
+            projectId={project.projectId}
+            versionId={project.selection.versionId}
+            onBeforeUpload={flushPendingSave}
+            onUploadStateChange={onUploadStateChange}
             setAppName={(value) => setState((previous) => ({ ...previous, appName: value }))}
             connectedCanvas={state.connectedCanvas}
             setConnectedCanvas={(value) =>
@@ -981,6 +979,10 @@ export function ScreenshotEditor() {
                     orientation={state.orientation}
                     theme={theme}
                     locale={state.locale}
+                    projectId={project.projectId}
+                    versionId={project.selection.versionId}
+                    onBeforeUpload={flushPendingSave}
+                    onUploadStateChange={onUploadStateChange}
                     selectedElementId={
                       selectedElement?.slideId === activeSlide.id
                         ? selectedElement.elementId

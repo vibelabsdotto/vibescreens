@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { atomicWriteJson } from "./atomic-write";
 import {
   detectProjectContent,
   materializeLegacyAssets,
@@ -14,12 +13,21 @@ import {
 import {
   ProjectAlreadyExistsError,
   ProjectIdentityMismatchError,
+  ProjectNotFoundError,
+  ProjectRevisionConflictError,
   createProjectRepository,
   type ProjectRepository,
   type TrashProjectResult,
 } from "./project-repository";
-import { workspaceRoot } from "./project-paths";
-import type { ProjectDocumentV3 } from "./project-schema";
+import { projectDocumentPath, workspaceRoot } from "./project-paths";
+import {
+  normalizeProjectDocument,
+  type ProjectDocumentV3,
+} from "./project-schema";
+import {
+  createSqliteDocumentStore,
+  type SqliteDocumentStore,
+} from "./sqlite-storage";
 import {
   MAX_PROJECTS,
   WorkspaceRevisionConflictError,
@@ -117,10 +125,10 @@ export interface WorkspaceRepository {
 export interface WorkspaceRepositoryOptions {
   rootDir: string;
   projectRepository?: ProjectRepository;
+  store?: SqliteDocumentStore;
   createInitialProject?: InitialProjectFactory;
   createProjectId?: () => ProjectId;
   now?: () => string;
-  writeJson?: (targetPath: string, data: unknown) => Promise<void>;
 }
 
 export class WorkspaceSchemaError extends Error {
@@ -148,19 +156,6 @@ export class WorkspaceProjectLimitError extends Error {
   constructor() {
     super(`A workspace cannot contain more than ${MAX_PROJECTS} projects`);
     this.name = "WorkspaceProjectLimitError";
-  }
-}
-
-export class PartialWorkspaceCommitError extends Error {
-  constructor(
-    public readonly operation: "create" | "rename" | "delete" | "import",
-    public readonly projectId: ProjectId,
-    public readonly cause: unknown,
-  ) {
-    super(
-      `${operation} changed project storage for ${projectId}, but workspace registration failed`,
-    );
-    this.name = "PartialWorkspaceCommitError";
   }
 }
 
@@ -279,28 +274,145 @@ export function assertValidWorkspaceRegistry(
 export function createWorkspaceRepository(
   options: WorkspaceRepositoryOptions,
 ): WorkspaceRepository {
-  const workspacePath = join(workspaceRoot(options.rootDir), "workspace.json");
-  const writeJson = options.writeJson ?? atomicWriteJson;
+  const legacyWorkspacePath = join(workspaceRoot(options.rootDir), "workspace.json");
+  const store = options.store ?? createSqliteDocumentStore(options.rootDir);
   const projectRepository =
-    options.projectRepository ?? createProjectRepository({ rootDir: options.rootDir });
+    options.projectRepository ??
+    createProjectRepository({ rootDir: options.rootDir, store });
   const idFactory = options.createProjectId ?? createProjectId;
   const clock = options.now ?? (() => new Date().toISOString());
+
+  const splitLegacyApps = (
+    workspace: WorkspaceRegistry,
+    projects: readonly ProjectDocumentV3[],
+  ): { workspace: WorkspaceRegistry; projects: ProjectDocumentV3[] } => {
+    const byId = new Map(projects.map((project) => [project.projectId, project]));
+    const nextWorkspace = structuredClone(workspace);
+    nextWorkspace.projectOrder = [];
+    nextWorkspace.projectsById = {};
+    const nextProjects: ProjectDocumentV3[] = [];
+    const slugs: string[] = [];
+
+    const addProject = (project: ProjectDocumentV3) => {
+      if (nextProjects.length >= MAX_PROJECTS) {
+        throw new WorkspaceProjectLimitError();
+      }
+      const slug = uniqueProjectSlug(project.name, slugs);
+      slugs.push(slug);
+      nextProjects.push(project);
+      nextWorkspace.projectOrder.push(project.projectId);
+      nextWorkspace.projectsById[project.projectId] = {
+        id: project.projectId,
+        name: project.name,
+        slug,
+        createdAt: project.createdAt,
+        updatedAt: project.updatedAt,
+      };
+    };
+
+    for (const sourceProjectId of workspace.projectOrder) {
+      const source = byId.get(sourceProjectId);
+      if (source === undefined) throw new OrphanedProjectError(sourceProjectId);
+      if (source.appOrder.length <= 1) {
+        addProject(source);
+        continue;
+      }
+
+      const selectedAppId = source.selection.appId;
+      const appOrder = [
+        selectedAppId,
+        ...source.appOrder.filter((appId) => appId !== selectedAppId),
+      ];
+      for (const appId of appOrder) {
+        const app = structuredClone(source.appsById[appId]);
+        const versionId = app.versionOrder.includes(source.selection.versionId)
+          ? source.selection.versionId
+          : app.versionOrder[0];
+        const version = app.versionsById[versionId];
+        const deckId = version.deckOrder.includes(source.selection.deckId)
+          ? source.selection.deckId
+          : version.deckOrder[0];
+        const deck = version.decksById[deckId];
+        const selectedSlideId = deck.slides.some(({ id }) => id === source.selection.slideId)
+          ? source.selection.slideId
+          : deck.slides[0]?.id;
+        const projectId = appId === selectedAppId ? source.projectId : idFactory();
+        if (nextProjects.some((project) => project.projectId === projectId)) {
+          throw new ProjectAlreadyExistsError(projectId);
+        }
+        const isolated = normalizeProjectDocument({
+          ...structuredClone(source),
+          projectId,
+          name: app.name,
+          revision: source.revision,
+          appOrder: [appId],
+          appsById: { [appId]: app },
+          assetsById: Object.fromEntries(
+            Object.entries(source.assetsById).filter(([, asset]) => asset.scope.appId === appId),
+          ),
+          selection: {
+            appId,
+            versionId,
+            deckId,
+            ...(selectedSlideId === undefined ? {} : { slideId: selectedSlideId }),
+          },
+        });
+        addProject(isolated);
+      }
+    }
+    nextWorkspace.activeProjectId = workspace.activeProjectId;
+    assertValidWorkspaceRegistry(nextWorkspace);
+    return { workspace: nextWorkspace, projects: nextProjects };
+  };
+
+  const importCurrentJsonWorkspace = async (): Promise<boolean> => {
+    let serialized: string;
+    try {
+      serialized = await readFile(legacyWorkspacePath, "utf8");
+    } catch (error) {
+      if (isNotFoundError(error)) return false;
+      throw error;
+    }
+    const workspace = JSON.parse(serialized) as unknown;
+    assertValidWorkspaceRegistry(workspace);
+    const projects: ProjectDocumentV3[] = [];
+    for (const projectId of workspace.projectOrder) {
+      try {
+        const projectBytes = await readFile(
+          projectDocumentPath(options.rootDir, projectId),
+          "utf8",
+        );
+        const project = normalizeProjectDocument(JSON.parse(projectBytes) as unknown);
+        if (project.projectId !== projectId) {
+          throw new ProjectIdentityMismatchError(
+            `Stored project ID ${project.projectId} does not match workspace ID ${projectId}`,
+          );
+        }
+        projects.push(project);
+      } catch (error) {
+        if (isNotFoundError(error)) throw new OrphanedProjectError(projectId);
+        throw error;
+      }
+    }
+    const split = splitLegacyApps(workspace, projects);
+    store.importWorkspace(split.workspace, split.projects);
+    return true;
+  };
 
   const readWorkspaceUnsafe = async (): Promise<{
     workspace: WorkspaceRegistry;
     exists: boolean;
   }> => {
-    try {
-      const serialized = await readFile(workspacePath, "utf8");
-      const parsed = JSON.parse(serialized) as unknown;
-      assertValidWorkspaceRegistry(parsed);
-      return { workspace: parsed, exists: true };
-    } catch (error) {
-      if (isNotFoundError(error)) {
-        return { workspace: createEmptyWorkspace(), exists: false };
-      }
-      throw error;
+    let workspace = store.readWorkspace();
+    if (workspace === undefined) {
+      await importCurrentJsonWorkspace();
+      workspace = store.readWorkspace();
     }
+    if (workspace === undefined) {
+      return { workspace: createEmptyWorkspace(), exists: false };
+    }
+    assertValidWorkspaceRegistry(workspace);
+    return { workspace, exists: true };
   };
 
   const assertWorkspaceRevision = (
@@ -321,9 +433,24 @@ export function createWorkspaceRepository(
     }
   };
 
-  const writeWorkspace = async (workspace: WorkspaceRegistry) => {
+  const writeWorkspace = async (
+    workspace: WorkspaceRegistry,
+    baseRevision?: number,
+  ) => {
     assertValidWorkspaceRegistry(workspace);
-    await writeJson(workspacePath, workspace);
+    if (baseRevision === undefined) {
+      if (store.createWorkspace(workspace)) return;
+    } else if (store.compareAndSwapWorkspace(baseRevision, workspace)) {
+      return;
+    } else if (
+      baseRevision === 0 &&
+      store.readWorkspace() === undefined &&
+      store.createWorkspace(workspace)
+    ) {
+      return;
+    }
+    const latest = store.readWorkspace();
+    throw new WorkspaceRevisionConflictError(latest?.revision ?? 0);
   };
 
   const registerProject = (
@@ -376,7 +503,13 @@ export function createWorkspaceRepository(
       try {
         return {
           sourceFile,
-          sourceBytes: await readFile(join(options.rootDir, sourceFile), "utf8"),
+          sourceBytes: await readFile(
+            /* turbopackIgnore: true */ join(
+              /* turbopackIgnore: true */ options.rootDir,
+              sourceFile,
+            ),
+            "utf8",
+          ),
         };
       } catch (error) {
         if (!isNotFoundError(error)) throw error;
@@ -387,7 +520,7 @@ export function createWorkspaceRepository(
 
   return {
     async load() {
-      return withWorkspaceQueue(workspacePath, async () => {
+      return withWorkspaceQueue(store.path, async () => {
         const current = await readWorkspaceUnsafe();
         if (!current.exists) await writeWorkspace(current.workspace);
         return current.workspace;
@@ -413,7 +546,7 @@ export function createWorkspaceRepository(
     },
 
     async createProject(input) {
-      return withWorkspaceQueue(workspacePath, async () => {
+      return withWorkspaceQueue(store.path, async () => {
         const { workspace } = await readWorkspaceUnsafe();
         assertWorkspaceRevision(workspace, input.baseRevision);
         if (workspace.projectOrder.length >= MAX_PROJECTS) {
@@ -439,19 +572,26 @@ export function createWorkspaceRepository(
             "Initial project factory must preserve the generated ID and revision 1",
           );
         }
-        const persistedProject = await projectRepository.create(project);
+        const persistedProject = normalizeProjectDocument(project);
         const nextWorkspace = registerProject(workspace, persistedProject, timestamp);
-        try {
-          await writeWorkspace(nextWorkspace);
-        } catch (error) {
-          throw new PartialWorkspaceCommitError("create", projectId, error);
+        if (
+          !store.createProjectWithWorkspace(
+            workspace.revision,
+            nextWorkspace,
+            persistedProject,
+          )
+        ) {
+          if (store.hasProject(projectId)) {
+            throw new ProjectAlreadyExistsError(projectId);
+          }
+          throw new WorkspaceRevisionConflictError(store.readWorkspace()?.revision ?? 0);
         }
         return { workspace: nextWorkspace, project: persistedProject };
       });
     },
 
     async switchProject(input) {
-      return withWorkspaceQueue(workspacePath, async () => {
+      return withWorkspaceQueue(store.path, async () => {
         const { workspace } = await readWorkspaceUnsafe();
         assertWorkspaceRevision(workspace, input.baseRevision);
         requireRegistered(workspace, input.projectId);
@@ -462,24 +602,32 @@ export function createWorkspaceRepository(
         const next = mutateWorkspace(workspace, workspace.revision, (draft) => {
           draft.activeProjectId = input.projectId;
         });
-        await writeWorkspace(next);
+        await writeWorkspace(next, workspace.revision);
         return next;
       });
     },
 
     async renameProject(input) {
-      return withWorkspaceQueue(workspacePath, async () => {
+      return withWorkspaceQueue(store.path, async () => {
         const { workspace } = await readWorkspaceUnsafe();
         assertWorkspaceRevision(workspace, input.baseWorkspaceRevision);
         requireRegistered(workspace, input.projectId);
         const name = input.name.trim();
         if (name.length === 0) throw new TypeError("Project name is required");
         const timestamp = input.now ?? clock();
-        const project = await projectRepository.mutate({
-          projectId: input.projectId,
-          baseRevision: input.baseProjectRevision,
-          now: timestamp,
-          mutate: (current) => ({ ...current, name }),
+        const currentProject = await projectRepository.read(input.projectId);
+        if (currentProject.revision !== input.baseProjectRevision) {
+          throw new ProjectRevisionConflictError({
+            projectId: input.projectId,
+            revision: currentProject.revision,
+            updatedAt: currentProject.updatedAt,
+          });
+        }
+        const project = normalizeProjectDocument({
+          ...structuredClone(currentProject),
+          name,
+          revision: currentProject.revision + 1,
+          updatedAt: timestamp,
         });
         const nextWorkspace = mutateWorkspace(
           workspace,
@@ -494,24 +642,35 @@ export function createWorkspaceRepository(
             meta.updatedAt = timestamp;
           },
         );
-        try {
-          await writeWorkspace(nextWorkspace);
-        } catch (error) {
-          throw new PartialWorkspaceCommitError("rename", input.projectId, error);
+        if (
+          !store.compareAndSwapProjectWithWorkspace(
+            workspace.revision,
+            currentProject.revision,
+            nextWorkspace,
+            project,
+          )
+        ) {
+          const latestWorkspace = store.readWorkspace();
+          if (latestWorkspace?.revision !== workspace.revision) {
+            throw new WorkspaceRevisionConflictError(latestWorkspace?.revision ?? 0);
+          }
+          const latestProject = store.readProject(input.projectId);
+          if (latestProject === undefined) throw new ProjectNotFoundError(input.projectId);
+          throw new ProjectRevisionConflictError({
+            projectId: input.projectId,
+            revision: latestProject.revision,
+            updatedAt: latestProject.updatedAt,
+          });
         }
         return { workspace: nextWorkspace, project };
       });
     },
 
     async deleteProject(input) {
-      return withWorkspaceQueue(workspacePath, async () => {
+      return withWorkspaceQueue(store.path, async () => {
         const { workspace } = await readWorkspaceUnsafe();
         assertWorkspaceRevision(workspace, input.baseRevision);
         requireRegistered(workspace, input.projectId);
-        const trash = await projectRepository.moveToTrash(
-          input.projectId,
-          input.trashTimestamp,
-        );
         const nextWorkspace = mutateWorkspace(
           workspace,
           workspace.revision,
@@ -525,17 +684,28 @@ export function createWorkspaceRepository(
             }
           },
         );
-        try {
-          await writeWorkspace(nextWorkspace);
-        } catch (error) {
-          throw new PartialWorkspaceCommitError("delete", input.projectId, error);
+        const trashStatus = store.moveProjectToTrashWithWorkspace(
+          workspace.revision,
+          nextWorkspace,
+          input.projectId,
+          input.trashTimestamp,
+        );
+        if (trashStatus === "conflict") {
+          throw new WorkspaceRevisionConflictError(store.readWorkspace()?.revision ?? 0);
         }
+        const trash: TrashProjectResult =
+          trashStatus === "moved"
+            ? {
+                status: "moved",
+                trashPath: `${store.path}#project-trash/${input.trashTimestamp}/${input.projectId}`,
+              }
+            : { status: "missing" };
         return { workspace: nextWorkspace, trash };
       });
     },
 
     async importLegacyProject(input) {
-      return withWorkspaceQueue(workspacePath, async () => {
+      return withWorkspaceQueue(store.path, async () => {
         const { workspace } = await readWorkspaceUnsafe();
         assertWorkspaceRevision(workspace, input.baseRevision);
         if (workspace.projectOrder.length > 0) {
@@ -596,29 +766,65 @@ export function createWorkspaceRepository(
         }
 
         await writeExactBackup(backupPath, source.sourceBytes);
+        const migratedProject = normalizeProjectDocument(project);
+        const existingProject = store.readProject(migratedProject.projectId);
         let persistedProject: ProjectDocumentV3;
-        try {
-          persistedProject = await projectRepository.create(project);
-        } catch (error) {
-          if (!(error instanceof ProjectAlreadyExistsError)) throw error;
-          const existing = await projectRepository.read(project.projectId);
+        let nextWorkspace: WorkspaceRegistry;
+        if (existingProject !== undefined) {
+          const existing = normalizeProjectDocument(existingProject);
           if (
             existing.migration?.sourceSha256 !== sourceSha256 &&
-            JSON.stringify(existing) !== JSON.stringify(project)
+            JSON.stringify(existing) !== JSON.stringify(migratedProject)
           ) {
-            throw error;
+            throw new ProjectAlreadyExistsError(migratedProject.projectId);
           }
           persistedProject = existing;
-        }
-        const nextWorkspace = registerProject(workspace, persistedProject, migratedAt);
-        try {
-          await writeWorkspace(nextWorkspace);
-        } catch (error) {
-          throw new PartialWorkspaceCommitError(
-            "import",
-            persistedProject.projectId,
-            error,
-          );
+          nextWorkspace = registerProject(workspace, persistedProject, migratedAt);
+          if (
+            !store.compareAndSwapProjectWithWorkspace(
+              workspace.revision,
+              existing.revision,
+              nextWorkspace,
+              existing,
+            )
+          ) {
+            const latestWorkspace = store.readWorkspace();
+            if (latestWorkspace?.revision !== workspace.revision) {
+              throw new WorkspaceRevisionConflictError(latestWorkspace?.revision ?? 0);
+            }
+            const latestProject = store.readProject(existing.projectId);
+            if (latestProject === undefined) {
+              throw new OrphanedProjectError(existing.projectId);
+            }
+            const latest = normalizeProjectDocument(latestProject);
+            if (latest.revision !== existing.revision) {
+              throw new ProjectRevisionConflictError({
+                projectId: latest.projectId,
+                revision: latest.revision,
+                updatedAt: latest.updatedAt,
+              });
+            }
+            throw new WorkspaceRevisionConflictError(latestWorkspace?.revision ?? 0);
+          }
+        } else {
+          persistedProject = migratedProject;
+          nextWorkspace = registerProject(workspace, persistedProject, migratedAt);
+          if (
+            !store.createProjectWithWorkspace(
+              workspace.revision,
+              nextWorkspace,
+              persistedProject,
+            )
+          ) {
+            const latestWorkspace = store.readWorkspace();
+            if (latestWorkspace?.revision !== workspace.revision) {
+              throw new WorkspaceRevisionConflictError(latestWorkspace?.revision ?? 0);
+            }
+            if (store.hasProject(persistedProject.projectId)) {
+              throw new ProjectAlreadyExistsError(persistedProject.projectId);
+            }
+            throw new WorkspaceRevisionConflictError(latestWorkspace?.revision ?? 0);
+          }
         }
         return {
           status: "imported",

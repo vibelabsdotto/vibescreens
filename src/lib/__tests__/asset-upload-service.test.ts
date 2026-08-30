@@ -1,10 +1,14 @@
+import { access, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { AppId, DeckId, VersionId } from "../ids";
 import { createProjectDocument, type DeckInput } from "../project-operations";
 import { ProjectRevisionConflictError, PublishedVersionMutationError } from "../project-repository";
 import { assetIdFor, type AssetRef, type ProjectDocumentV3 } from "../project-schema";
-import type { WorkspaceProjectService } from "../server-service";
+import { createWorkspaceProjectService, type WorkspaceProjectService } from "../server-service";
 import type { ProjectId, WorkspaceRegistry } from "../workspace";
 import {
   createAssetUploadService,
@@ -95,6 +99,64 @@ function projectService(
 }
 
 describe("asset upload service", () => {
+  it("keeps a freshly uploaded asset registered with the real repository", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "vibescreens-real-upload-"));
+    try {
+      const projectApi = createWorkspaceProjectService({ rootDir });
+      const created = await projectApi.executeWorkspaceCommand({
+        action: "create",
+        baseRevision: 0,
+        name: "Upload Project",
+      });
+      const service = createAssetUploadService({ rootDir, projectService: projectApi });
+
+      const result = await service.uploadAsset({
+        projectId: created.project.projectId,
+        kind: "screenshot",
+        extension: "png",
+        originalName: "screen.png",
+        mime: "image/png",
+        bytes: PNG_BYTES,
+      });
+
+      expect(result.project.revision).toBe(2);
+      expect(result.project.assetsById[result.asset.id]).toEqual(result.asset);
+      await expect(access(join(rootDir, "public", result.asset.url))).resolves.toBeUndefined();
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("retries concurrent upload registration so both assets commit", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "vibescreens-concurrent-upload-"));
+    try {
+      const projectApi = createWorkspaceProjectService({ rootDir });
+      const created = await projectApi.executeWorkspaceCommand({
+        action: "create",
+        baseRevision: 0,
+        name: "Upload Project",
+      });
+      const service = createAssetUploadService({ rootDir, projectService: projectApi });
+      const upload = (suffix: number) => service.uploadAsset({
+        projectId: created.project.projectId,
+        kind: "image",
+        extension: "png",
+        originalName: `overlay-${suffix}.png`,
+        mime: "image/png",
+        bytes: Buffer.concat([PNG_BYTES, Buffer.from([suffix])]),
+      });
+
+      const results = await Promise.all([upload(1), upload(2)]);
+      const finalProject = await projectApi.getProject(created.project.projectId);
+
+      expect(results.map((result) => result.asset.id)).toHaveLength(2);
+      expect(Object.keys(finalProject.assetsById)).toHaveLength(2);
+      expect(finalProject.revision).toBe(3);
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("resolves the active project selection, stores SHA-256 bytes, and CAS-registers the full AssetRef", async () => {
     const project = makeProject();
     const projectApi = projectService(project);

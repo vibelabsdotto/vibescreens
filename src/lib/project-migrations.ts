@@ -3,6 +3,12 @@ import { readFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { storeAsset, type AssetKind, type StoreAssetInput, type StoredAsset } from "./asset-store";
+import {
+  hasValidFontSignature,
+  MAX_FONT_ASSET_BYTES,
+  MAX_IMAGE_ASSET_BYTES,
+  type SupportedFontExtension,
+} from "./asset-content";
 import { type AppId, type DeckId, type VersionId } from "./ids";
 import { pickText, resolveScreenshot } from "./locale";
 import {
@@ -12,6 +18,7 @@ import {
   type ProjectDocumentV3,
   type VersionRecord,
 } from "./project-schema";
+import { sniffImageType } from "./request-guard";
 import type {
   Device,
   ImageElement,
@@ -117,9 +124,6 @@ const LANDSCAPE_DEVICES = new Set<Device>([
 const MIME_EXTENSIONS: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
-  "image/webp": "webp",
-  "image/gif": "gif",
-  "image/svg+xml": "svg",
   "font/woff2": "woff2",
   "font/woff": "woff",
   "font/ttf": "ttf",
@@ -130,9 +134,6 @@ const EXTENSION_MIMES: Record<string, string> = {
   png: "image/png",
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
-  webp: "image/webp",
-  gif: "image/gif",
-  svg: "image/svg+xml",
   woff2: "font/woff2",
   woff: "font/woff",
   ttf: "font/ttf",
@@ -761,6 +762,19 @@ export async function materializeLegacyAssets(
         path,
         source,
         message: `Unsupported asset MIME remains unchanged at ${path}: ${source}`,
+      });
+      return source;
+    }
+    const byteLimit = kind === "font" ? MAX_FONT_ASSET_BYTES : MAX_IMAGE_ASSET_BYTES;
+    const validContent = kind === "font"
+      ? hasValidFontSignature(bytes, extension as SupportedFontExtension)
+      : sniffImageType(Buffer.from(bytes)) === mime;
+    if (bytes.byteLength === 0 || bytes.byteLength > byteLimit || !validContent) {
+      warnings.push({
+        code: "invalid_asset",
+        path,
+        source,
+        message: `Invalid or oversized asset remains unchanged at ${path}: ${source}`,
       });
       return source;
     }

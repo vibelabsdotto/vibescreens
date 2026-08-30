@@ -3,6 +3,7 @@ import {
   access as accessFile,
   copyFile,
   cp as copyDirectory,
+  lstat,
   mkdir as makeDirectory,
   open as openFile,
   readFile,
@@ -67,6 +68,7 @@ export interface AssetStoreFileHandle {
 
 export interface AssetStoreFileSystem {
   access(path: string): Promise<void>;
+  readFile?(path: string): Promise<Uint8Array>;
   mkdir(path: string): Promise<void>;
   open(path: string): Promise<AssetStoreFileHandle>;
   rename(source: string, destination: string): Promise<void>;
@@ -75,6 +77,7 @@ export interface AssetStoreFileSystem {
 
 const nodeFileSystem: AssetStoreFileSystem = {
   access: accessFile,
+  readFile,
   mkdir: async (path) => {
     await makeDirectory(path, { recursive: true });
   },
@@ -150,6 +153,27 @@ function isNotFoundError(error: unknown): boolean {
   );
 }
 
+export async function assertSafeAssetStorageRoot(
+  rootDir: string,
+  descendants: readonly string[] = [],
+): Promise<void> {
+  const paths = [join(rootDir, "public"), join(rootDir, "public", "vibescreens-assets")];
+  let current = paths[1];
+  for (const descendant of descendants) {
+    current = join(current, descendant);
+    paths.push(current);
+  }
+  for (const path of paths) {
+    try {
+      if ((await lstat(path)).isSymbolicLink()) {
+        throw new TypeError(`Asset storage directory must not be a symbolic link: ${path}`);
+      }
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
+    }
+  }
+}
+
 const targetWriteTails = new Map<string, Promise<void>>();
 
 async function withTargetWriteLock<T>(
@@ -189,8 +213,15 @@ export async function storeAsset(
 
   const sha256 = createHash("sha256").update(input.bytes).digest("hex");
   const kindDirectory = assetKindDirectory(input.kind);
+  const rootDir = input.rootDir ?? process.cwd();
+  await assertSafeAssetStorageRoot(rootDir, [
+    input.projectId,
+    input.appId,
+    input.versionId,
+    kindDirectory,
+  ]);
   const directory = join(
-    input.rootDir ?? process.cwd(),
+    rootDir,
     "public",
     "vibescreens-assets",
     input.projectId,
@@ -205,6 +236,11 @@ export async function storeAsset(
     await fileSystem.mkdir(directory);
     try {
       await fileSystem.access(targetPath);
+      const existingBytes = await (fileSystem.readFile ?? readFile)(targetPath);
+      const existingHash = createHash("sha256").update(existingBytes).digest("hex");
+      if (existingBytes.byteLength !== input.bytes.byteLength || existingHash !== sha256) {
+        throw new Error(`Asset target ${targetPath} hash/size mismatch; target is corrupt`);
+      }
     } catch (error) {
       if (!isNotFoundError(error)) throw error;
 
@@ -346,6 +382,16 @@ export async function cloneVersionAssets(
   }
 
   const rootDir = input.rootDir ?? process.cwd();
+  await assertSafeAssetStorageRoot(rootDir, [
+    input.projectId,
+    input.appId,
+    input.sourceVersionId,
+  ]);
+  await assertSafeAssetStorageRoot(rootDir, [
+    input.projectId,
+    input.appId,
+    input.targetVersionId,
+  ]);
   const appAssetDirectory = join(
     rootDir,
     "public",

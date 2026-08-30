@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,7 +26,10 @@ function deck(locale = "en"): DeckInput {
   };
 }
 
-async function setup(now: () => string = () => NOW) {
+async function setup(
+  now: () => string = () => NOW,
+  removeVersionAssets?: (directory: string) => Promise<void>,
+) {
   const rootDir = await mkdtemp(join(tmpdir(), "vibescreens-server-service-"));
   roots.push(rootDir);
   const projectIds = ["prj_one" as ProjectId, "prj_two" as ProjectId];
@@ -52,8 +55,9 @@ async function setup(now: () => string = () => NOW) {
     createDeckId: () => deckIds.shift()!,
     createInitialDeck: () => deck(),
     cloneVersionAssets: cloneAssets,
+    removeVersionAssets,
   });
-  return { service, cloneAssets };
+  return { service, cloneAssets, rootDir };
 }
 
 afterEach(async () => {
@@ -61,6 +65,22 @@ afterEach(async () => {
 });
 
 describe("workspace/project server service", () => {
+  it("rejects the removed public App lifecycle", async () => {
+    const { service } = await setup();
+    const created = await service.executeWorkspaceCommand({
+      action: "create",
+      baseRevision: 0,
+      name: "Project",
+    });
+
+    await expect(service.executeProjectCommand(created.project.projectId, {
+      action: "createApp",
+      baseRevision: created.project.revision,
+      name: "Second App",
+      initialDeck: deck("de"),
+    } as never)).rejects.toThrow("Unsupported project action: createApp");
+  });
+
   it("creates, summarizes, switches, renames, and deletes independent projects", async () => {
     const { service } = await setup();
 
@@ -82,13 +102,11 @@ describe("workspace/project server service", () => {
         projectId: "prj_one",
         name: "First Project",
         revision: 1,
-        appCount: 1,
       }),
       expect.objectContaining({
         projectId: "prj_two",
         name: "Second Project",
         revision: 1,
-        appCount: 1,
       }),
     ]);
 
@@ -120,7 +138,7 @@ describe("workspace/project server service", () => {
     await expect(service.getProject(first.project.projectId)).rejects.toThrow();
   });
 
-  it("executes app and version lifecycle commands under project revision checks", async () => {
+  it("executes version lifecycle commands under project revision checks", async () => {
     const { service, cloneAssets } = await setup();
     const created = await service.executeWorkspaceCommand({
       action: "create",
@@ -131,31 +149,17 @@ describe("workspace/project server service", () => {
     const initialAppId = created.project.selection.appId;
     const initialVersionId = created.project.selection.versionId;
 
-    const withApp = await service.executeProjectCommand(projectId, {
-      action: "createApp",
-      baseRevision: 1,
-      name: "Desktop App",
-      versionName: "Desktop Launch",
-      initialDeck: deck("de"),
-    });
-    expect(withApp.project).toMatchObject({
-      revision: 2,
-      selection: { appId: "app_second", versionId: "ver_second_app" },
-    });
-
     const withVersion = await service.executeProjectCommand(projectId, {
       action: "createVersion",
-      baseRevision: withApp.project.revision,
-      appId: initialAppId,
+      baseRevision: created.project.revision,
       name: "Release 2",
       initialDeck: deck("fr"),
     });
-    expect(withVersion.project.selection.versionId).toBe("ver_release");
+    expect(withVersion.project.selection.versionId).toBe("ver_second_app");
 
     const published = await service.executeProjectCommand(projectId, {
       action: "publishVersion",
       baseRevision: withVersion.project.revision,
-      appId: initialAppId,
       versionId: initialVersionId,
     });
     expect(
@@ -166,7 +170,6 @@ describe("workspace/project server service", () => {
       service.executeProjectCommand(projectId, {
         action: "renameVersion",
         baseRevision: published.project.revision,
-        appId: initialAppId,
         versionId: initialVersionId,
         name: "Forbidden Rename",
       }),
@@ -175,13 +178,12 @@ describe("workspace/project server service", () => {
     const cloned = await service.executeProjectCommand(projectId, {
       action: "cloneVersion",
       baseRevision: published.project.revision,
-      appId: initialAppId,
       sourceVersionId: initialVersionId,
       name: "Editable Copy",
     });
-    expect(cloned.project.selection.versionId).toBe("ver_clone");
+    expect(cloned.project.selection.versionId).toBe("ver_release");
     expect(
-      cloned.project.appsById[initialAppId].versionsById["ver_clone" as VersionId],
+      cloned.project.appsById[initialAppId].versionsById["ver_release" as VersionId],
     ).toMatchObject({
       status: "draft",
       sourceVersionId: initialVersionId,
@@ -191,7 +193,7 @@ describe("workspace/project server service", () => {
       projectId,
       appId: initialAppId,
       sourceVersionId: initialVersionId,
-      targetVersionId: "ver_clone",
+      targetVersionId: "ver_release",
       assets: expect.any(Array),
     });
   });
@@ -258,7 +260,6 @@ describe("workspace/project server service", () => {
     await service.executeProjectCommand(projectId, {
       action: "cloneVersion",
       baseRevision: withAsset.revision,
-      appId,
       sourceVersionId,
       name: "Verified Copy",
     });
@@ -347,7 +348,6 @@ describe("workspace/project server service", () => {
     const withSecond = await service.executeProjectCommand(projectId, {
       action: "createVersion",
       baseRevision: withAsset.revision,
-      appId,
       name: "Second",
       initialDeck: {
         device: "iphone",
@@ -365,13 +365,55 @@ describe("workspace/project server service", () => {
     await service.executeProjectCommand(projectId, {
       action: "deleteVersion",
       baseRevision: withSecond.project.revision,
-      appId,
       versionId,
     });
 
     const after = await service.getProject(projectId);
     expect(after.appsById[appId].versionsById[versionId]).toBeUndefined();
     expect(Object.keys(after.assetsById)).toEqual([]);
+  });
+
+  it("stages deleted-version assets before commit and reports deferred cleanup", async () => {
+    const removeVersionAssets = vi.fn(async () => {
+      throw new Error("injected cleanup failure");
+    });
+    const { service, rootDir } = await setup(() => NOW, removeVersionAssets);
+    const created = await service.executeWorkspaceCommand({
+      action: "create",
+      baseRevision: 0,
+      name: "Project",
+    });
+    const projectId = created.project.projectId;
+    const appId = created.project.selection.appId;
+    const versionId = created.project.selection.versionId;
+    const sourceDirectory = join(
+      rootDir,
+      "public",
+      "vibescreens-assets",
+      projectId,
+      appId,
+      versionId,
+    );
+    await mkdir(sourceDirectory, { recursive: true });
+    await writeFile(join(sourceDirectory, "asset.png"), "bytes");
+    const withSecond = await service.executeProjectCommand(projectId, {
+      action: "createVersion",
+      baseRevision: created.project.revision,
+      name: "Second",
+      initialDeck: deck(),
+    });
+
+    const deleted = await service.executeProjectCommand(projectId, {
+      action: "deleteVersion",
+      baseRevision: withSecond.project.revision,
+      versionId,
+    });
+
+    expect(deleted.assetCleanupPending).toBe(true);
+    await expect(access(sourceDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await service.getProject(projectId)).appsById[appId].versionsById[versionId])
+      .toBeUndefined();
+    expect(removeVersionAssets).toHaveBeenCalledOnce();
   });
 
   it("uses one timestamp for every record changed by a project command", async () => {
@@ -389,16 +431,17 @@ describe("workspace/project server service", () => {
       .mockReturnValueOnce("2026-08-28T13:00:01.000Z");
 
     const result = await service.executeProjectCommand(created.project.projectId, {
-      action: "renameApp",
+      action: "renameVersion",
       baseRevision: created.project.revision,
-      appId: created.project.selection.appId,
-      name: "Renamed App",
+      versionId: created.project.selection.versionId,
+      name: "Renamed Version",
     });
 
     expect(result.project.updatedAt).toBe(commandTime);
-    expect(result.project.appsById[result.project.selection.appId].updatedAt).toBe(
-      commandTime,
-    );
+    expect(
+      result.project.appsById[result.project.selection.appId]
+        .versionsById[result.project.selection.versionId].updatedAt,
+    ).toBe(commandTime);
   });
 
   it("saves a full draft document but rejects stale revisions", async () => {
@@ -409,7 +452,9 @@ describe("workspace/project server service", () => {
       name: "Project",
     });
     const candidate = structuredClone(created.project);
-    candidate.appsById[candidate.selection.appId].name = "Edited App";
+    const app = candidate.appsById[candidate.selection.appId];
+    app.versionsById[candidate.selection.versionId]
+      .decksById[candidate.selection.deckId].appName = "Edited deck";
 
     const saved = await service.saveProject({
       projectId: created.project.projectId,
@@ -417,7 +462,11 @@ describe("workspace/project server service", () => {
       document: candidate,
     });
     expect(saved).toMatchObject({ revision: 2 });
-    expect(saved.appsById[saved.selection.appId].name).toBe("Edited App");
+    expect(
+      saved.appsById[saved.selection.appId]
+        .versionsById[saved.selection.versionId]
+        .decksById[saved.selection.deckId].appName,
+    ).toBe("Edited deck");
 
     await expect(
       service.saveProject({

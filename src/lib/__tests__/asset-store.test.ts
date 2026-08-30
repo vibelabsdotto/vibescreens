@@ -9,6 +9,7 @@ import {
   rename,
   rm,
   stat,
+  symlink,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -51,6 +52,42 @@ afterEach(async () => {
 });
 
 describe("storeAsset", () => {
+  it("rejects symlinked public asset roots", async () => {
+    const root = await useTemporaryWorkingDirectory();
+    const external = await mkdtemp(join(tmpdir(), "vibescreens-assets-external-"));
+    temporaryDirectories.push(external);
+    await symlink(external, join(root, "public"));
+
+    await expect(storeAsset({
+      projectId: PROJECT_ID,
+      appId: APP_ID,
+      versionId: VERSION_ID,
+      kind: "image",
+      extension: "png",
+      bytes: Buffer.from("blocked"),
+    })).rejects.toThrow(/symbolic link/i);
+    await expect(readdir(external)).resolves.toEqual([]);
+  });
+
+  it("rejects symlinked descendants inside the managed asset tree", async () => {
+    const root = await useTemporaryWorkingDirectory();
+    const external = await mkdtemp(join(tmpdir(), "vibescreens-assets-descendant-"));
+    temporaryDirectories.push(external);
+    const projectDirectory = join(root, "public", "vibescreens-assets", PROJECT_ID);
+    await mkdir(projectDirectory, { recursive: true });
+    await symlink(external, join(projectDirectory, APP_ID));
+
+    await expect(storeAsset({
+      projectId: PROJECT_ID,
+      appId: APP_ID,
+      versionId: VERSION_ID,
+      kind: "image",
+      extension: "png",
+      bytes: Buffer.from("blocked descendant"),
+    })).rejects.toThrow(/symbolic link/i);
+    await expect(readdir(external)).resolves.toEqual([]);
+  });
+
   it("writes under an explicit root without consulting process.cwd", async () => {
     const directory = await mkdtemp(join(tmpdir(), "vibescreens-assets-root-"));
     temporaryDirectories.push(directory);
@@ -367,6 +404,24 @@ describe("cloneVersionAssets", () => {
 
     expect(first).toBeDefined();
     expect(second).toEqual(first);
+  });
+
+  it("fails closed when a canonical store target was tampered with", async () => {
+    const directory = await useTemporaryWorkingDirectory();
+    const input: StoreAssetInput = {
+      projectId: PROJECT_ID,
+      appId: APP_ID,
+      versionId: VERSION_ID,
+      kind: "image",
+      extension: "png",
+      bytes: Buffer.from("expected store bytes"),
+    };
+    const stored = await storeAsset(input);
+    const targetPath = join(directory, "public", stored.url.slice(1));
+    await writeFile(targetPath, "tampered store bytes");
+
+    await expect(storeAsset(input)).rejects.toThrow(/mismatch|corrupt/i);
+    await expect(readFile(targetPath, "utf8")).resolves.toBe("tampered store bytes");
   });
 
   it("rejects a mismatched existing target without overwriting it", async () => {

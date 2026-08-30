@@ -1,14 +1,18 @@
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { atomicWriteJson } from "../atomic-write";
+
 import type { AppId, DeckId, VersionId } from "../ids";
-import { createProjectDocument } from "../project-operations";
+import { createApp, createProjectDocument } from "../project-operations";
+import { projectDocumentPath } from "../project-paths";
 import { createProjectRepository } from "../project-repository";
 import type { ProjectDocumentV3 } from "../project-schema";
+import { createSqliteDocumentStore, vibeScreensDatabasePath } from "../sqlite-storage";
+import { createEmptyWorkspace } from "../workspace";
 import type { ProjectId } from "../workspace";
 import {
   OrphanedProjectError,
@@ -55,6 +59,24 @@ async function temporaryRoot(): Promise<string> {
   return rootDir;
 }
 
+function abortWorkspaceUpdates(rootDir: string): void {
+  const database = new DatabaseSync(vibeScreensDatabasePath(rootDir));
+  database.exec(`
+    CREATE TRIGGER abort_workspace_updates
+    BEFORE UPDATE ON workspace
+    BEGIN
+      SELECT RAISE(ABORT, 'injected workspace failure');
+    END;
+  `);
+  database.close();
+}
+
+function allowWorkspaceUpdates(rootDir: string): void {
+  const database = new DatabaseSync(vibeScreensDatabasePath(rootDir));
+  database.exec("DROP TRIGGER abort_workspace_updates");
+  database.close();
+}
+
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
@@ -64,7 +86,7 @@ afterEach(async () => {
 });
 
 describe("workspace repository", () => {
-  it("initializes a missing registry once and never replaces corrupt durable data", async () => {
+  it("initializes a missing registry once and ignores stale JSON after SQLite becomes authoritative", async () => {
     const rootDir = await temporaryRoot();
     const repository = createWorkspaceRepository({
       rootDir,
@@ -80,33 +102,114 @@ describe("workspace repository", () => {
     });
     const workspacePath = join(rootDir, ".vibescreens", "workspace.json");
     await writeFile(workspacePath, "not-json\n");
-    await expect(repository.load()).rejects.toThrow();
+    await expect(repository.load()).resolves.toMatchObject({ revision: 0, projectOrder: [] });
     await expect(readFile(workspacePath, "utf8")).resolves.toBe("not-json\n");
   });
 
-  it("creates the project document before registering it and guards workspace CAS", async () => {
+  it("rejects a JSON workspace whose registered project file is missing", async () => {
     const rootDir = await temporaryRoot();
-    const events: string[] = [];
-    const projectRepository = createProjectRepository({
-      rootDir,
-      writeJson: async (path, data) => {
-        events.push("project");
-        await atomicWriteJson(path, data);
+    const projectId = "prj_missing_json" as ProjectId;
+    const workspacePath = join(rootDir, ".vibescreens", "workspace.json");
+    await mkdir(dirname(workspacePath), { recursive: true });
+    await writeFile(workspacePath, JSON.stringify({
+      schemaVersion: 1,
+      revision: 4,
+      activeProjectId: projectId,
+      projectOrder: [projectId],
+      projectsById: {
+        [projectId]: {
+          id: projectId,
+          name: "Missing",
+          slug: "missing",
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
       },
+    }));
+    const repository = createWorkspaceRepository({
+      rootDir,
+      createInitialProject: makeInitialProject,
     });
+
+    await expect(repository.load()).rejects.toBeInstanceOf(OrphanedProjectError);
+    await rm(workspacePath);
+    await expect(createWorkspaceRepository({
+      rootDir,
+      createInitialProject: makeInitialProject,
+    }).load()).resolves.toMatchObject({ revision: 0, projectOrder: [] });
+  });
+
+  it("non-destructively splits multi-App JSON projects into one Project per App", async () => {
+    const rootDir = await temporaryRoot();
+    const projectId = "prj_multi_app" as ProjectId;
+    const base = makeInitialProject({ projectId, name: "First App", now: timestamp });
+    const multiApp = createApp(base, "Second App", {
+      device: "android",
+      orientation: "portrait",
+      locale: "en",
+      connectedCanvas: true,
+      appName: "Second App",
+      themeId: "clean-light",
+      fontId: "system-sans",
+      appIcon: "",
+      slides: [{ id: "slide-second" } as never],
+    }, {
+      appId: "app_second" as AppId,
+      versionId: "ver_second" as VersionId,
+      deckId: "deck_second" as DeckId,
+      now: later,
+    });
+    const workspacePath = join(rootDir, ".vibescreens", "workspace.json");
+    const projectPath = projectDocumentPath(rootDir, projectId);
+    await mkdir(dirname(workspacePath), { recursive: true });
+    await mkdir(dirname(projectPath), { recursive: true });
+    await writeFile(workspacePath, JSON.stringify({
+      schemaVersion: 1,
+      revision: 2,
+      activeProjectId: projectId,
+      projectOrder: [projectId],
+      projectsById: {
+        [projectId]: {
+          id: projectId,
+          name: "Legacy Multi App",
+          slug: "legacy-multi-app",
+          createdAt: timestamp,
+          updatedAt: later,
+        },
+      },
+    }));
+    await writeFile(projectPath, JSON.stringify(multiApp));
+    const repository = createWorkspaceRepository({
+      rootDir,
+      createInitialProject: makeInitialProject,
+      createProjectId: () => "prj_split_app" as ProjectId,
+    });
+
+    const workspace = await repository.load();
+    const projects = await Promise.all(workspace.projectOrder.map((id) => repository.readProject(id)));
+
+    expect(workspace.projectOrder).toEqual([projectId, "prj_split_app"]);
+    expect(projects.map((project) => project.appOrder)).toEqual([
+      ["app_second"],
+      [base.appOrder[0]],
+    ]);
+    expect(projects.map((project) => project.name)).toEqual([
+      "Second App",
+      base.appsById[base.appOrder[0]].name,
+    ]);
+    expect(JSON.parse(await readFile(projectPath, "utf8")).appOrder).toHaveLength(2);
+  });
+
+  it("creates the project and guards workspace CAS", async () => {
+    const rootDir = await temporaryRoot();
     const generatedIds: ProjectId[] = [
       "prj_first" as ProjectId,
       "prj_second" as ProjectId,
     ];
     const repository = createWorkspaceRepository({
       rootDir,
-      projectRepository,
       createInitialProject: makeInitialProject,
       createProjectId: () => generatedIds.shift()!,
-      writeJson: async (path, data) => {
-        events.push("workspace");
-        await atomicWriteJson(path, data);
-      },
     });
 
     const created = await repository.createProject({
@@ -115,7 +218,6 @@ describe("workspace repository", () => {
       now: timestamp,
     });
 
-    expect(events).toEqual(["project", "workspace"]);
     expect(created.workspace).toMatchObject({
       revision: 1,
       activeProjectId: "prj_first",
@@ -150,6 +252,131 @@ describe("workspace repository", () => {
     expect(results.filter(({ status }) => status === "rejected")).toHaveLength(1);
     expect(generated).toBe(1);
     expect((await repository.load()).projectOrder).toHaveLength(1);
+  });
+
+  it("does not leave an orphaned project when workspace creation fails", async () => {
+    const rootDir = await temporaryRoot();
+    const repository = createWorkspaceRepository({
+      rootDir,
+      createInitialProject: makeInitialProject,
+      createProjectId: () => "prj_atomic_create" as ProjectId,
+    });
+    await repository.load();
+    abortWorkspaceUpdates(rootDir);
+
+    await expect(
+      repository.createProject({ baseRevision: 0, name: "Atomic", now: timestamp }),
+    ).rejects.toThrow("injected workspace failure");
+
+    allowWorkspaceUpdates(rootDir);
+    expect((await repository.load()).projectOrder).toEqual([]);
+    await expect(
+      createProjectRepository({ rootDir }).exists("prj_atomic_create" as ProjectId),
+    ).resolves.toBe(false);
+  });
+
+  it("does not register an existing legacy project deleted during import", async () => {
+    const rootDir = await temporaryRoot();
+    const document = makeInitialProject({
+      projectId: "prj_existing_import" as ProjectId,
+      name: "Existing Import",
+      now: timestamp,
+    });
+    await writeFile(join(rootDir, "vibescreens.json"), JSON.stringify(document));
+    const baseStore = createSqliteDocumentStore(rootDir);
+    expect(baseStore.createWorkspace(createEmptyWorkspace())).toBe(true);
+    expect(baseStore.createProject(document)).toBe(true);
+    let injected = false;
+    const store = {
+      ...baseStore,
+      compareAndSwapProjectWithWorkspace(...args: Parameters<typeof baseStore.compareAndSwapProjectWithWorkspace>) {
+        if (!injected) {
+          injected = true;
+          expect(baseStore.moveProjectToTrash(document.projectId, "concurrent-delete")).toBe(true);
+        }
+        return baseStore.compareAndSwapProjectWithWorkspace(...args);
+      },
+    };
+    const repository = createWorkspaceRepository({
+      rootDir,
+      store,
+      createInitialProject: makeInitialProject,
+    });
+
+    await expect(repository.importLegacyProject({
+      baseRevision: 0,
+      migratedAt: later,
+    })).rejects.toBeInstanceOf(OrphanedProjectError);
+    expect(baseStore.readWorkspace()?.projectOrder).toEqual([]);
+  });
+
+  it("does not split project and workspace names when workspace rename fails", async () => {
+    const rootDir = await temporaryRoot();
+    const repository = createWorkspaceRepository({
+      rootDir,
+      createInitialProject: makeInitialProject,
+      createProjectId: () => "prj_atomic_rename" as ProjectId,
+    });
+    const created = await repository.createProject({
+      baseRevision: 0,
+      name: "Before",
+      now: timestamp,
+    });
+    abortWorkspaceUpdates(rootDir);
+
+    await expect(
+      repository.renameProject({
+        baseWorkspaceRevision: created.workspace.revision,
+        baseProjectRevision: created.project.revision,
+        projectId: created.project.projectId,
+        name: "After",
+        now: later,
+      }),
+    ).rejects.toThrow("injected workspace failure");
+
+    allowWorkspaceUpdates(rootDir);
+    expect((await repository.load()).projectsById[created.project.projectId].name).toBe(
+      "Before",
+    );
+    await expect(
+      createProjectRepository({ rootDir }).read(created.project.projectId),
+    ).resolves.toMatchObject({ name: "Before", revision: 1 });
+  });
+
+  it("does not trash a registered project when workspace deletion fails", async () => {
+    const rootDir = await temporaryRoot();
+    const repository = createWorkspaceRepository({
+      rootDir,
+      createInitialProject: makeInitialProject,
+      createProjectId: () => "prj_atomic_delete" as ProjectId,
+    });
+    const created = await repository.createProject({
+      baseRevision: 0,
+      name: "Keep",
+      now: timestamp,
+    });
+    abortWorkspaceUpdates(rootDir);
+
+    await expect(
+      repository.deleteProject({
+        baseRevision: created.workspace.revision,
+        projectId: created.project.projectId,
+        trashTimestamp: "2026-08-28T010000000Z",
+      }),
+    ).rejects.toThrow("injected workspace failure");
+
+    allowWorkspaceUpdates(rootDir);
+    expect((await repository.load()).projectOrder).toEqual([created.project.projectId]);
+    await expect(
+      createProjectRepository({ rootDir }).read(created.project.projectId),
+    ).resolves.toMatchObject({ name: "Keep", revision: 1 });
+    const database = new DatabaseSync(vibeScreensDatabasePath(rootDir), {
+      readOnly: true,
+    });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM project_trash").get()).toEqual({
+      count: 0,
+    });
+    database.close();
   });
 
   it("switches, renames, and deletes with independent workspace/project revisions", async () => {
@@ -218,10 +445,10 @@ describe("workspace repository", () => {
       name: "Orphan",
       now: timestamp,
     });
-    await rm(join(rootDir, ".vibescreens", "projects", "prj_orphan"), {
-      recursive: true,
-      force: true,
-    });
+    await createProjectRepository({ rootDir }).moveToTrash(
+      created.project.projectId,
+      "orphaned-for-test",
+    );
 
     await expect(
       repository.switchProject({
@@ -270,24 +497,11 @@ describe("workspace repository", () => {
     await mkdir(join(rootDir, "public", "screenshots"), { recursive: true });
     await writeFile(
       join(rootDir, "public", "screenshots", "existing.png"),
-      "screenshot bytes",
+      Buffer.from("89504e470d0a1a0a00000000", "hex"),
     );
-    const events: string[] = [];
-    const projectRepository = createProjectRepository({
-      rootDir,
-      writeJson: async (path, data) => {
-        events.push("project");
-        await atomicWriteJson(path, data);
-      },
-    });
     const repository = createWorkspaceRepository({
       rootDir,
-      projectRepository,
       createInitialProject: makeInitialProject,
-      writeJson: async (path, data) => {
-        events.push("workspace");
-        await atomicWriteJson(path, data);
-      },
     });
 
     const imported = await repository.importLegacyProject({
@@ -297,7 +511,6 @@ describe("workspace repository", () => {
 
     expect(imported.status).toBe("imported");
     if (imported.status !== "imported") throw new Error("Expected import");
-    expect(events).toEqual(["project", "workspace"]);
     await expect(readFile(join(rootDir, "vibescreens.json"), "utf8")).resolves.toBe(
       sourceBytes,
     );
@@ -323,35 +536,60 @@ describe("workspace repository", () => {
       ]),
     });
 
-    const eventCount = events.length;
     const repeated = await repository.importLegacyProject({
       baseRevision: imported.workspace.revision,
       migratedAt: later,
     });
     expect(repeated).toMatchObject({ status: "not_needed" });
-    expect(events).toHaveLength(eventCount);
+  });
+
+  it("does not leave an orphaned migrated project when workspace import fails", async () => {
+    const rootDir = await temporaryRoot();
+    await writeFile(
+      join(rootDir, "vibescreens.json"),
+      `${JSON.stringify({
+        schemaVersion: 2,
+        appName: "Atomic Import",
+        themeId: "clean-light",
+        fontId: "system-sans",
+        connectedCanvas: false,
+        locales: ["en"],
+        locale: "en",
+        device: "iphone",
+        orientation: "portrait",
+        appIcon: "",
+        slidesByDevice: { iphone: [{ id: "slide-atomic-import" }] },
+      })}\n`,
+    );
+    const repository = createWorkspaceRepository({
+      rootDir,
+      createInitialProject: makeInitialProject,
+    });
+    await repository.load();
+    abortWorkspaceUpdates(rootDir);
+
+    await expect(
+      repository.importLegacyProject({ baseRevision: 0, migratedAt: timestamp }),
+    ).rejects.toThrow("injected workspace failure");
+
+    allowWorkspaceUpdates(rootDir);
+    expect((await repository.load()).projectOrder).toEqual([]);
+    const database = new DatabaseSync(vibeScreensDatabasePath(rootDir), {
+      readOnly: true,
+    });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM projects").get()).toEqual({
+      count: 0,
+    });
+    database.close();
   });
 
   it("opens a future root schema read-only with zero backup, project, or workspace writes", async () => {
     const rootDir = await temporaryRoot();
     const source = '{"schemaVersion":4,"future":true}\n';
     await writeFile(join(rootDir, "vibescreens.json"), source);
-    const events: string[] = [];
-    const projectRepository = createProjectRepository({
-      rootDir,
-      writeJson: async (path, data) => {
-        events.push("project");
-        await atomicWriteJson(path, data);
-      },
-    });
     const repository = createWorkspaceRepository({
       rootDir,
-      projectRepository,
       createInitialProject: makeInitialProject,
-      writeJson: async (path, data) => {
-        events.push("workspace");
-        await atomicWriteJson(path, data);
-      },
     });
 
     const result = await repository.importLegacyProject({
@@ -365,10 +603,14 @@ describe("workspace repository", () => {
       readOnly: true,
       sourceFile: "vibescreens.json",
     });
-    expect(events).toEqual([]);
-    await expect(access(join(rootDir, ".vibescreens"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
+    const database = new DatabaseSync(vibeScreensDatabasePath(rootDir), { readOnly: true });
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM workspace").get(),
+    ).toMatchObject({ count: 0 });
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM projects").get(),
+    ).toMatchObject({ count: 0 });
+    database.close();
     await expect(readFile(join(rootDir, "vibescreens.json"), "utf8")).resolves.toBe(
       source,
     );

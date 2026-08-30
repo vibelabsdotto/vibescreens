@@ -3,14 +3,20 @@ import * as React from "react";
 import { Image as ImageIcon, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { didFail, img, setImage } from "@/lib/image-cache";
+import type { VersionId } from "@/lib/ids";
 import { resolveScreenshot } from "@/lib/locale";
 import type { ProjectDocumentV3 } from "@/lib/project-schema";
+import type { ProjectId } from "@/lib/workspace";
 
 type Props = {
   label: string;
   value: string;
   locale?: string;
   assetKind?: "screenshot" | "image" | "app-icon";
+  projectId: ProjectId;
+  versionId: VersionId;
+  onBeforeUpload?: () => Promise<void>;
+  onUploadStateChange?: (uploading: boolean) => void;
   onChange: (v: string) => void;
   /** Receives the server project returned by a managed upload (revision bump). */
   onUploaded?: (project: ProjectDocumentV3) => void;
@@ -35,12 +41,14 @@ async function uploadDataUrl(
   dataUrl: string,
   fileName: string,
   kind: NonNullable<Props["assetKind"]>,
+  projectId: ProjectId,
+  versionId: VersionId,
 ): Promise<UploadResult> {
   try {
     const response = await fetch("/api/upload", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ dataUrl, fileName, kind }),
+      body: JSON.stringify({ dataUrl, fileName, kind, projectId, versionId }),
     });
     let body: { ok?: boolean; path?: unknown; error?: unknown; project?: unknown };
     try {
@@ -68,6 +76,12 @@ async function uploadDataUrl(
       body.project !== null && typeof body.project === "object"
         ? (body.project as ProjectDocumentV3)
         : null;
+    if (
+      project !== null
+      && (project.projectId !== projectId || project.selection.versionId !== versionId)
+    ) {
+      return { path: null, project: null, error: "Upload returned a different project target." };
+    }
     return { path: body.path, project, error: null };
   } catch {
     return {
@@ -83,6 +97,10 @@ export function ScreenshotPicker({
   value,
   locale,
   assetKind = "screenshot",
+  projectId,
+  versionId,
+  onBeforeUpload,
+  onUploadStateChange,
   onChange,
   onUploaded,
 }: Props) {
@@ -90,12 +108,15 @@ export function ScreenshotPicker({
   const [dragging, setDragging] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [uploading, setUploading] = React.useState(false);
+  const targetRef = React.useRef(`${projectId}\u0000${versionId}`);
+  targetRef.current = `${projectId}\u0000${versionId}`;
 
   React.useEffect(() => {
     setError(null);
   }, [locale, assetKind]);
 
   async function handleFile(file: File) {
+    const requestTarget = `${projectId}\u0000${versionId}`;
     setError(null);
     if (!ACCEPTED.includes(file.type)) {
       setError("Use PNG or JPG (App Store rejects other formats)");
@@ -114,9 +135,18 @@ export function ScreenshotPicker({
     }
     // Persist managed assets when the endpoint is available. Static exports
     // and rejected uploads keep the existing inline-data fallback.
+    try {
+      await onBeforeUpload?.();
+    } catch {
+      setError("Save pending edits before uploading again.");
+      return;
+    }
+    onUploadStateChange?.(true);
     setUploading(true);
-    const upload = await uploadDataUrl(dataUrl, file.name, assetKind);
+    const upload = await uploadDataUrl(dataUrl, file.name, assetKind, projectId, versionId);
     setUploading(false);
+    onUploadStateChange?.(false);
+    if (targetRef.current !== requestTarget) return;
     if (upload.path !== null) {
       // Adopt the server's revision bump BEFORE the changed value triggers the
       // next autosave, otherwise that save reuses the pre-upload revision and

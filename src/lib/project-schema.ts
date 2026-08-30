@@ -201,6 +201,15 @@ export function assetKindDirectory(kind: AssetKind): string {
   return ASSET_KIND_DIRECTORIES[kind];
 }
 
+function stableAssetToken(value: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(value)) {
+    hash ^= BigInt(byte);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, "0");
+}
+
 export function assetIdFor(
   versionId: VersionId,
   kind: AssetKind,
@@ -213,8 +222,9 @@ export function assetIdFor(
     font: "ft",
     "app-icon": "ai",
   };
-  const versionToken = versionId.slice(4).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 12);
-  return `asset_${versionToken}_${kindToken[kind]}_${sha256.slice(0, 32)}_${extension.slice(0, 6)}` as AssetId;
+  const versionToken = stableAssetToken(versionId);
+  const extensionToken = stableAssetToken(extension).slice(0, 8);
+  return `asset_${versionToken}_${kindToken[kind]}_${sha256.slice(0, 28)}_${extensionToken}` as AssetId;
 }
 
 export function managedAssetUrl(input: {

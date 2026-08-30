@@ -102,7 +102,6 @@ function summary(revision = 7): ProjectSummary {
     name: "Client Project",
     revision,
     updatedAt: now,
-    appCount: 1,
   };
 }
 
@@ -168,9 +167,9 @@ describe("workspace client requests", () => {
       projectId,
     });
     await client.executeProjectCommand(projectId, {
-      action: "renameApp",
+      action: "renameVersion",
       baseRevision: 7,
-      appId,
+      versionId,
       name: "Renamed",
     });
 
@@ -209,9 +208,9 @@ describe("workspace client requests", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          action: "renameApp",
+          action: "renameVersion",
           baseRevision: 7,
-          appId,
+          versionId,
           name: "Renamed",
         }),
       }),
@@ -269,7 +268,6 @@ describe("workspace client requests", () => {
       .executeProjectCommand(projectId, {
         action: "renameVersion",
         baseRevision: 7,
-        appId,
         versionId,
         name: "Renamed",
       })

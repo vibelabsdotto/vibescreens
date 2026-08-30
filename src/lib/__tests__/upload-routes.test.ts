@@ -79,7 +79,6 @@ describe("image upload route", () => {
         fileName: "overlay.png",
         kind: "image",
         projectId: PROJECT_ID,
-        appId: APP_ID,
         versionId: VERSION_ID,
       }),
     );
@@ -87,7 +86,6 @@ describe("image upload route", () => {
     expect(response.status).toBe(200);
     expect(uploadAsset).toHaveBeenCalledWith({
       projectId: PROJECT_ID,
-      appId: APP_ID,
       versionId: VERSION_ID,
       kind: "image",
       extension: "png",
@@ -98,7 +96,7 @@ describe("image upload route", () => {
     await expect(response.json()).resolves.toEqual({
       ok: true,
       path: stored.url,
-      asset: stored,
+      project: { revision: 8 },
       revision: 8,
     });
   });
@@ -109,7 +107,11 @@ describe("image upload route", () => {
     const { POST } = createUploadRouteHandlers(service);
 
     await POST(
-      imageRequest({ dataUrl: `data:image/png;base64,${PNG_BYTES.toString("base64")}` }),
+      imageRequest({
+        dataUrl: `data:image/png;base64,${PNG_BYTES.toString("base64")}`,
+        projectId: PROJECT_ID,
+        versionId: VERSION_ID,
+      }),
     );
 
     expect(uploadAsset).toHaveBeenCalledWith(
@@ -166,7 +168,11 @@ describe("image upload route", () => {
     const { POST } = createUploadRouteHandlers({ uploadAsset } as AssetUploadService);
 
     const response = await POST(
-      imageRequest({ dataUrl: `data:image/png;base64,${PNG_BYTES.toString("base64")}` }),
+      imageRequest({
+        dataUrl: `data:image/png;base64,${PNG_BYTES.toString("base64")}`,
+        projectId: PROJECT_ID,
+        versionId: VERSION_ID,
+      }),
     );
     const body = await response.json();
 
@@ -187,7 +193,6 @@ describe("font upload route", () => {
     const response = await POST(
       fontRequest(file, {}, {
         projectId: PROJECT_ID,
-        appId: APP_ID,
         versionId: VERSION_ID,
       }),
     );
@@ -195,7 +200,6 @@ describe("font upload route", () => {
     expect(response.status).toBe(200);
     expect(uploadAsset).toHaveBeenCalledWith({
       projectId: PROJECT_ID,
-      appId: APP_ID,
       versionId: VERSION_ID,
       kind: "font",
       extension: "woff2",
@@ -206,7 +210,6 @@ describe("font upload route", () => {
     await expect(response.json()).resolves.toEqual({
       ok: true,
       font: { src: stored.url, format: "woff2" },
-      asset: stored,
       project: { revision: 8 },
       revision: 8,
     });

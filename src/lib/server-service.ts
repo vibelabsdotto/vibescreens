@@ -1,7 +1,11 @@
-import { rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import { cloneVersionAssets as cloneStoredVersionAssets } from "./asset-store";
+import {
+  assertSafeAssetStorageRoot,
+  cloneVersionAssets as cloneStoredVersionAssets,
+} from "./asset-store";
 import { DEFAULT_SCREENSHOT_FONT_ID } from "./constants";
 import { DEFAULT_PROJECT } from "./defaults";
 import {
@@ -17,15 +21,12 @@ import {
 } from "./ids";
 import {
   cloneVersion,
-  createApp,
   createDeck,
   createProjectDocument,
   createVersion,
-  deleteApp,
   deleteDeck,
   deleteVersion,
   publishVersion,
-  renameApp,
   renameVersion,
   selectAppVersion,
   selectDeck,
@@ -43,6 +44,10 @@ import {
   type ProjectDocumentV3,
 } from "./project-schema";
 import {
+  createSqliteDocumentStore,
+  type SqliteDocumentStore,
+} from "./sqlite-storage";
+import {
   assertProjectId,
   createProjectId,
   type ProjectId,
@@ -59,7 +64,6 @@ export interface ProjectSummary {
   name: string;
   revision: number;
   updatedAt: string;
-  appCount: number;
 }
 
 export interface WorkspaceSnapshot {
@@ -107,63 +111,42 @@ export type WorkspaceCommand =
 
 export type ProjectCommand =
   | {
-      action: "createApp";
-      baseRevision: number;
-      name: string;
-      versionName?: string;
-      initialDeck: DeckInput;
-    }
-  | {
-      action: "renameApp";
-      baseRevision: number;
-      appId: AppId;
-      name: string;
-    }
-  | { action: "deleteApp"; baseRevision: number; appId: AppId }
-  | {
       action: "createVersion";
       baseRevision: number;
-      appId: AppId;
       name: string;
       initialDeck: DeckInput;
     }
   | {
       action: "cloneVersion";
       baseRevision: number;
-      appId: AppId;
       sourceVersionId: VersionId;
       name: string;
     }
   | {
       action: "renameVersion";
       baseRevision: number;
-      appId: AppId;
       versionId: VersionId;
       name: string;
     }
   | {
       action: "publishVersion";
       baseRevision: number;
-      appId: AppId;
       versionId: VersionId;
     }
   | {
       action: "deleteVersion";
       baseRevision: number;
-      appId: AppId;
       versionId: VersionId;
     }
   | {
       action: "createDeck";
       baseRevision: number;
-      appId: AppId;
       versionId: VersionId;
       deck: DeckInput;
     }
   | {
       action: "updateDeck";
       baseRevision: number;
-      appId: AppId;
       versionId: VersionId;
       deckId: DeckId;
       changes: Partial<Omit<DeckRecord, "id">>;
@@ -171,14 +154,12 @@ export type ProjectCommand =
   | {
       action: "deleteDeck";
       baseRevision: number;
-      appId: AppId;
       versionId: VersionId;
       deckId: DeckId;
     }
   | {
-      action: "selectAppVersion";
+      action: "selectVersion";
       baseRevision: number;
-      appId: AppId;
       versionId: VersionId;
       deckId?: DeckId;
       slideId?: string;
@@ -186,7 +167,6 @@ export type ProjectCommand =
   | {
       action: "selectDeck";
       baseRevision: number;
-      appId: AppId;
       versionId: VersionId;
       deckId: DeckId;
       slideId?: string;
@@ -223,11 +203,12 @@ export interface WorkspaceProjectService {
   executeProjectCommand(
     projectId: ProjectId,
     command: ProjectCommand,
-  ): Promise<{ project: ProjectDocumentV3 }>;
+  ): Promise<{ project: ProjectDocumentV3; assetCleanupPending?: boolean }>;
 }
 
 export interface WorkspaceProjectServiceOptions {
   rootDir?: string;
+  store?: SqliteDocumentStore;
   workspaceRepository?: WorkspaceRepository;
   projectRepository?: ProjectRepository;
   now?: () => string;
@@ -281,6 +262,15 @@ function assertRecord(value: unknown, label: string): asserts value is Record<st
   }
 }
 
+function isNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object"
+    && error !== null
+    && "code" in error
+    && error.code === "ENOENT"
+  );
+}
+
 function trashTimestamp(timestamp: string): string {
   return timestamp.replace(/[^A-Za-z0-9_-]/g, "");
 }
@@ -308,6 +298,7 @@ export function createWorkspaceProjectService(
   options: WorkspaceProjectServiceOptions = {},
 ): WorkspaceProjectService {
   const rootDir = options.rootDir ?? process.cwd();
+  const store = options.store ?? createSqliteDocumentStore(rootDir);
   const clock = options.now ?? (() => new Date().toISOString());
   const projectIdFactory = options.createProjectId ?? createProjectId;
   const appIdFactory = options.createAppId ?? createAppId;
@@ -321,11 +312,12 @@ export function createWorkspaceProjectService(
       await rm(directory, { recursive: true, force: true });
     });
   const projectRepository =
-    options.projectRepository ?? createProjectRepository({ rootDir, now: clock });
+    options.projectRepository ?? createProjectRepository({ rootDir, store, now: clock });
   const workspaceRepository =
     options.workspaceRepository ??
     createWorkspaceRepository({
       rootDir,
+      store,
       projectRepository,
       createProjectId: projectIdFactory,
       now: clock,
@@ -358,7 +350,6 @@ export function createWorkspaceProjectService(
             name: project.name,
             revision: project.revision,
             updatedAt: project.updatedAt,
-            appCount: project.appOrder.length,
           };
         }),
       );
@@ -429,61 +420,53 @@ export function createWorkspaceProjectService(
       assertProjectId(projectId);
       assertRecord(command, "Project command");
       assertRevision(command.baseRevision, "baseRevision");
-      await requireRegisteredProject(projectId);
+      const registeredProject = await requireRegisteredProject(projectId);
+      if (command.action === "deleteVersion") {
+        assertVersionId(command.versionId);
+        await assertSafeAssetStorageRoot(rootDir, [
+          projectId,
+          registeredProject.selection.appId,
+          command.versionId,
+        ]);
+      }
 
       const commandTimestamp = clock();
       let clonedAssetDirectory: string | undefined;
-      const removedAssetDirectories: string[] = [];
+      let stagedVersionAssets:
+        | { sourceDirectory: string; stagedDirectory: string }
+        | undefined;
+      let projectCommitted = false;
       try {
+        if (command.action === "deleteVersion") {
+          const sourceDirectory = versionAssetDirectory(
+            rootDir,
+            projectId,
+            registeredProject.selection.appId,
+            command.versionId,
+          );
+          const stagedDirectory = `${sourceDirectory}.trash-${randomUUID()}`;
+          try {
+            await rename(sourceDirectory, stagedDirectory);
+            stagedVersionAssets = { sourceDirectory, stagedDirectory };
+          } catch (error) {
+            if (!isNotFoundError(error)) throw error;
+          }
+        }
         const project = await projectRepository.mutate({
           projectId,
           baseRevision: command.baseRevision,
           now: commandTimestamp,
           mutate: async (current) => {
             const now = commandTimestamp;
+            const appId = current.selection.appId;
+            assertAppId(appId);
             switch (command.action) {
-              case "createApp": {
-                assertName(command.name);
-                assertOptionalString(command.versionName, "versionName");
-                assertRecord(command.initialDeck, "initialDeck");
-                return createApp(current, command.name, command.initialDeck, {
-                  appId: appIdFactory(),
-                  versionId: versionIdFactory(),
-                  versionName: command.versionName,
-                  deckId: deckIdFactory(),
-                  now,
-                });
-              }
-              case "renameApp":
-                assertAppId(command.appId);
-                assertName(command.name);
-                return renameApp(current, command.appId, command.name, { now });
-              case "deleteApp": {
-                assertAppId(command.appId);
-                // Snapshot every version directory still on disk BEFORE the
-                // document mutation; the reply below removes them with the
-                // owning entities instead of stranding public asset files.
-                for (const versionId of Object.keys(
-                  current.appsById[command.appId]?.versionsById ?? {},
-                )) {
-                  removedAssetDirectories.push(
-                    versionAssetDirectory(
-                      rootDir,
-                      projectId,
-                      command.appId,
-                      versionId as VersionId,
-                    ),
-                  );
-                }
-                return deleteApp(current, command.appId, { now });
-              }
               case "createVersion":
-                assertAppId(command.appId);
                 assertName(command.name);
                 assertRecord(command.initialDeck, "initialDeck");
                 return createVersion(
                   current,
-                  command.appId,
+                  appId,
                   command.name,
                   command.initialDeck,
                   {
@@ -493,13 +476,12 @@ export function createWorkspaceProjectService(
                   },
                 );
               case "cloneVersion": {
-                assertAppId(command.appId);
                 assertVersionId(command.sourceVersionId);
                 assertName(command.name);
                 const targetVersionId = versionIdFactory();
                 const candidate = cloneVersion(
                   current,
-                  command.appId,
+                  appId,
                   command.sourceVersionId,
                   command.name,
                   { versionId: targetVersionId, now },
@@ -510,13 +492,13 @@ export function createWorkspaceProjectService(
                 // that point at nonexistent files.
                 const sourceAssets = assetsForVersion(
                   current,
-                  command.appId,
+                  appId,
                   command.sourceVersionId,
                 );
                 await cloneAssets({
                   rootDir,
                   projectId,
-                  appId: command.appId,
+                  appId: appId,
                   sourceVersionId: command.sourceVersionId,
                   targetVersionId,
                   assets: Object.values(sourceAssets),
@@ -524,91 +506,75 @@ export function createWorkspaceProjectService(
                 clonedAssetDirectory = versionAssetDirectory(
                   rootDir,
                   projectId,
-                  command.appId,
+                  appId,
                   targetVersionId,
                 );
                 return candidate;
               }
               case "renameVersion":
-                assertAppId(command.appId);
                 assertVersionId(command.versionId);
                 assertName(command.name);
                 return renameVersion(
                   current,
-                  command.appId,
+                  appId,
                   command.versionId,
                   command.name,
                   { now },
                 );
               case "publishVersion":
-                assertAppId(command.appId);
                 assertVersionId(command.versionId);
-                return publishVersion(current, command.appId, command.versionId, { now });
+                return publishVersion(current, appId, command.versionId, { now });
               case "deleteVersion": {
-                assertAppId(command.appId);
                 assertVersionId(command.versionId);
-                removedAssetDirectories.push(
-                  versionAssetDirectory(
-                    rootDir,
-                    projectId,
-                    command.appId,
-                    command.versionId,
-                  ),
-                );
-                return deleteVersion(current, command.appId, command.versionId, { now });
+                return deleteVersion(current, appId, command.versionId, { now });
               }
               case "createDeck":
-                assertAppId(command.appId);
                 assertVersionId(command.versionId);
                 assertRecord(command.deck, "deck");
-                return createDeck(current, command.appId, command.versionId, command.deck, {
+                return createDeck(current, appId, command.versionId, command.deck, {
                   deckId: deckIdFactory(),
                   now,
                 });
               case "updateDeck":
-                assertAppId(command.appId);
                 assertVersionId(command.versionId);
                 assertDeckId(command.deckId);
                 assertRecord(command.changes, "changes");
                 return updateDeck(
                   current,
-                  command.appId,
+                  appId,
                   command.versionId,
                   command.deckId,
                   command.changes,
                   { now },
                 );
               case "deleteDeck":
-                assertAppId(command.appId);
                 assertVersionId(command.versionId);
                 assertDeckId(command.deckId);
                 return deleteDeck(
                   current,
-                  command.appId,
+                  appId,
                   command.versionId,
                   command.deckId,
                   { now },
                 );
-              case "selectAppVersion":
-                assertAppId(command.appId);
+              case "selectVersion":
                 assertVersionId(command.versionId);
                 if (command.deckId !== undefined) assertDeckId(command.deckId);
                 assertOptionalString(command.slideId, "slideId");
                 return selectAppVersion(
                   current,
-                  command.appId,
+                  appId,
                   command.versionId,
                   command.deckId,
                   { now, slideId: command.slideId },
                 );
               case "selectDeck":
-                assertAppId(command.appId);
                 assertVersionId(command.versionId);
                 assertDeckId(command.deckId);
                 assertOptionalString(command.slideId, "slideId");
                 return selectDeck(
                   current,
-                  command.appId,
+                  appId,
                   command.versionId,
                   command.deckId,
                   { now, slideId: command.slideId },
@@ -622,13 +588,33 @@ export function createWorkspaceProjectService(
             }
           },
         });
-        // Committed: the document no longer owns these versions, so their
-        // asset files must not stay publicly reachable under public/.
-        await Promise.all(
-          removedAssetDirectories.splice(0).map((directory) => removeAssets(directory)),
-        );
-        return { project };
+        projectCommitted = true;
+        let assetCleanupPending = false;
+        if (stagedVersionAssets !== undefined) {
+          try {
+            await removeAssets(stagedVersionAssets.stagedDirectory);
+          } catch {
+            assetCleanupPending = true;
+          }
+        }
+        return {
+          project,
+          ...(assetCleanupPending ? { assetCleanupPending: true } : {}),
+        };
       } catch (error) {
+        if (stagedVersionAssets !== undefined && !projectCommitted) {
+          try {
+            await rename(
+              stagedVersionAssets.stagedDirectory,
+              stagedVersionAssets.sourceDirectory,
+            );
+          } catch (rollbackError) {
+            throw new AggregateError(
+              [error, rollbackError],
+              "Version deletion failed and staged assets could not be restored",
+            );
+          }
+        }
         if (clonedAssetDirectory !== undefined) {
           try {
             await rm(clonedAssetDirectory, { recursive: true, force: true });

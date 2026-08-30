@@ -1,20 +1,14 @@
-import { access, mkdir, readFile, rename } from "node:fs/promises";
-import { dirname } from "node:path";
-
-import { atomicWriteJson } from "./atomic-write";
 import { canonicalJson } from "./canonical-json";
-import { pruneUnreachableDraftAssets } from "./project-operations";
-import {
-  projectDocumentPath,
-  projectRoot,
-  projectTrashPath,
-} from "./project-paths";
 import {
   normalizeProjectDocument,
   publishedVersionSnapshot,
   type ProjectDocumentV3,
   type VersionRecord,
 } from "./project-schema";
+import {
+  createSqliteDocumentStore,
+  type SqliteDocumentStore,
+} from "./sqlite-storage";
 import { assertProjectId, type ProjectId } from "./workspace";
 
 export interface ProjectConflictMetadata {
@@ -91,7 +85,7 @@ export interface ProjectRepository {
 
 export interface ProjectRepositoryOptions {
   rootDir: string;
-  writeJson?: (targetPath: string, data: unknown) => Promise<void>;
+  store?: SqliteDocumentStore;
   now?: () => string;
 }
 
@@ -118,15 +112,6 @@ async function withProjectQueue<T>(
       projectOperationTails.delete(key);
     }
   }
-}
-
-function isNotFoundError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error.code === "ENOENT" || error.code === "ENOTDIR")
-  );
 }
 
 function conflictFor(document: ProjectDocumentV3): ProjectRevisionConflictError {
@@ -159,6 +144,29 @@ function assertProjectIdentity(
   }
   if (candidate.createdAt !== current.createdAt) {
     throw new ProjectIdentityMismatchError("Project createdAt is immutable");
+  }
+  if (candidate.name !== current.name) {
+    throw new ProjectIdentityMismatchError("Project name must be changed through the workspace rename command");
+  }
+  if (canonicalJson(candidate.appOrder) !== canonicalJson(current.appOrder)) {
+    throw new ProjectIdentityMismatchError("Internal App membership is immutable");
+  }
+  const candidateAppIds = Object.keys(candidate.appsById).sort();
+  const currentAppIds = Object.keys(current.appsById).sort();
+  if (canonicalJson(candidateAppIds) !== canonicalJson(currentAppIds)) {
+    throw new ProjectIdentityMismatchError("Internal App membership is immutable");
+  }
+  for (const appId of current.appOrder) {
+    const before = current.appsById[appId];
+    const after = candidate.appsById[appId];
+    if (
+      after === undefined
+      || after.id !== before.id
+      || after.name !== before.name
+      || after.createdAt !== before.createdAt
+    ) {
+      throw new ProjectIdentityMismatchError("Internal App identity is immutable");
+    }
   }
 }
 
@@ -211,24 +219,18 @@ function assertPublishedVersionsUnchanged(
 export function createProjectRepository(
   options: ProjectRepositoryOptions,
 ): ProjectRepository {
-  const writeJson = options.writeJson ?? atomicWriteJson;
+  const store = options.store ?? createSqliteDocumentStore(options.rootDir);
   const clock = options.now ?? (() => new Date().toISOString());
 
   const queueKey = (projectId: ProjectId) => {
     assertProjectId(projectId);
-    return projectRoot(options.rootDir, projectId);
+    return `${store.path}:${projectId}`;
   };
 
   const readUnsafe = async (projectId: ProjectId): Promise<ProjectDocumentV3> => {
-    const path = projectDocumentPath(options.rootDir, projectId);
-    let serialized: string;
-    try {
-      serialized = await readFile(path, "utf8");
-    } catch (error) {
-      if (isNotFoundError(error)) throw new ProjectNotFoundError(projectId);
-      throw error;
-    }
-    const document = normalizeProjectDocument(JSON.parse(serialized) as unknown);
+    const stored = store.readProject(projectId);
+    if (stored === undefined) throw new ProjectNotFoundError(projectId);
+    const document = normalizeProjectDocument(stored);
     if (document.projectId !== projectId) {
       throw new ProjectIdentityMismatchError(
         `Stored project ID ${document.projectId} does not match path ID ${projectId}`,
@@ -245,27 +247,21 @@ export function createProjectRepository(
   ): Promise<ProjectDocumentV3> => {
     assertProjectIdentity(projectId, current, candidateInput);
     const candidate = structuredClone(candidateInput);
-    // Replacing/clearing managed references otherwise strands their registry
-    // entries forever and makes the draft unpublishable; published entries are
-    // protected (prune only touches drafts).
-    pruneUnreachableDraftAssets(candidate);
     candidate.revision = current.revision + 1;
     candidate.updatedAt = timestamp;
     const normalized = normalizeProjectDocument(candidate);
-    await writeJson(projectDocumentPath(options.rootDir, projectId), normalized);
+    if (!store.compareAndSwapProject(projectId, current.revision, normalized)) {
+      const latest = store.readProject(projectId);
+      if (latest === undefined) throw new ProjectNotFoundError(projectId);
+      throw conflictFor(normalizeProjectDocument(latest));
+    }
     return normalized;
   };
 
   return {
     async exists(projectId) {
       queueKey(projectId);
-      try {
-        await access(projectDocumentPath(options.rootDir, projectId));
-        return true;
-      } catch (error) {
-        if (isNotFoundError(error)) return false;
-        throw error;
-      }
+      return store.hasProject(projectId);
     },
 
     async read(projectId) {
@@ -281,14 +277,9 @@ export function createProjectRepository(
         if (normalized.revision !== 1) {
           throw new TypeError("New projects must start at revision 1");
         }
-        try {
-          await access(projectDocumentPath(options.rootDir, projectId));
+        if (!store.createProject(normalized)) {
           throw new ProjectAlreadyExistsError(projectId);
-        } catch (error) {
-          if (error instanceof ProjectAlreadyExistsError) throw error;
-          if (!isNotFoundError(error)) throw error;
         }
-        await writeJson(projectDocumentPath(options.rootDir, projectId), normalized);
         return normalized;
       });
     },
@@ -333,21 +324,13 @@ export function createProjectRepository(
     async moveToTrash(projectId, trashTimestamp) {
       const key = queueKey(projectId);
       return withProjectQueue(key, async () => {
-        const source = projectRoot(options.rootDir, projectId);
-        const destination = projectTrashPath(
-          options.rootDir,
-          projectId,
-          trashTimestamp,
-        );
-        try {
-          await access(source);
-        } catch (error) {
-          if (isNotFoundError(error)) return { status: "missing" };
-          throw error;
+        if (!store.moveProjectToTrash(projectId, trashTimestamp)) {
+          return { status: "missing" };
         }
-        await mkdir(dirname(destination), { recursive: true });
-        await rename(source, destination);
-        return { status: "moved", trashPath: destination };
+        return {
+          status: "moved",
+          trashPath: `${store.path}#project-trash/${trashTimestamp}/${projectId}`,
+        };
       });
     },
   };

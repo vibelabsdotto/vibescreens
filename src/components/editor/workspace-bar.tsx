@@ -38,11 +38,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { AppId, VersionId } from "@/lib/ids";
+import type { VersionId } from "@/lib/ids";
 import type { AppRecord, ProjectDocumentV3, VersionRecord } from "@/lib/project-schema";
 import type { ProjectConflictState, WorkspaceMigrationStatus } from "@/lib/storage";
 import type { ProjectId, WorkspaceRegistry } from "@/lib/workspace";
 import type { ProjectSummary } from "@/lib/workspace-client";
+import { WORKSPACE_PICKER_LABELS } from "./workspace-bar-contract";
 
 type MaybePromise = void | Promise<void>;
 
@@ -64,25 +65,18 @@ export interface WorkspaceBarProps {
   onRenameProject: (projectId: ProjectId, name: string) => MaybePromise;
   onDeleteProject: (projectId: ProjectId) => MaybePromise;
 
-  onSelectApp: (appId: AppId) => MaybePromise;
-  onCreateApp: (name: string) => MaybePromise;
-  onRenameApp: (appId: AppId, name: string) => MaybePromise;
-  onDeleteApp: (appId: AppId) => MaybePromise;
-
-  onSelectVersion: (appId: AppId, versionId: VersionId) => MaybePromise;
-  onCreateVersion: (appId: AppId, name: string) => MaybePromise;
+  onSelectVersion: (versionId: VersionId) => MaybePromise;
+  onCreateVersion: (name: string) => MaybePromise;
   onCloneVersion: (
-    appId: AppId,
     sourceVersionId: VersionId,
     name: string,
   ) => MaybePromise;
   onRenameVersion: (
-    appId: AppId,
     versionId: VersionId,
     name: string,
   ) => MaybePromise;
-  onDeleteVersion: (appId: AppId, versionId: VersionId) => MaybePromise;
-  onPublishVersion: (appId: AppId, versionId: VersionId) => MaybePromise;
+  onDeleteVersion: (versionId: VersionId) => MaybePromise;
+  onPublishVersion: (versionId: VersionId) => MaybePromise;
 }
 
 interface NameDialogConfig {
@@ -311,7 +305,6 @@ export function WorkspaceBar(props: WorkspaceBarProps) {
     props.workspaceReadOnly ??
     (props.readOnly === true && version?.status !== "published");
   const busy = props.loading === true || props.saving === true;
-  const appId = app?.id;
   const versionId = version?.id;
 
   const openCreateProject = () =>
@@ -333,7 +326,10 @@ export function WorkspaceBar(props: WorkspaceBarProps) {
         className="border-b bg-card/95 px-3 py-2 shadow-sm backdrop-blur"
       >
         <div className="flex flex-wrap items-center gap-2">
-          <div className="min-w-44 flex-1 sm:max-w-64">
+          <div className="grid min-w-44 flex-1 gap-1 sm:max-w-64">
+            <span className="px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {WORKSPACE_PICKER_LABELS.project}
+            </span>
             <Select
               value={activeProjectId}
               disabled={busy || props.projects.length === 0}
@@ -408,104 +404,16 @@ export function WorkspaceBar(props: WorkspaceBarProps) {
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <span aria-hidden className="hidden h-6 w-px bg-border sm:block" />
-
-          <div className="min-w-40 flex-1 sm:max-w-56">
-            <Select
-              value={appId}
-              disabled={busy || props.project === null}
-              onValueChange={(value) => settle(() => props.onSelectApp(value as AppId))}
-            >
-              <SelectTrigger aria-label="Select app">
-                <SelectValue placeholder="No app" />
-              </SelectTrigger>
-              <SelectContent>
-                {props.project?.appOrder.map((id) => (
-                  <SelectItem key={id} value={id}>
-                    {props.project?.appsById[id].name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                aria-label="App actions"
-                disabled={busy || mutationLocked || props.project === null}
-              >
-                <MoreHorizontal aria-hidden />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              <DropdownMenuLabel>App</DropdownMenuLabel>
-              <DropdownMenuItem
-                onSelect={() =>
-                  setNameDialog({
-                    key: "create-app",
-                    title: "Create app",
-                    description: "Add another app with a new draft version.",
-                    label: "App name",
-                    submitLabel: "Create app",
-                    onConfirm: props.onCreateApp,
-                  })
-                }
-              >
-                <Plus aria-hidden /> Create app
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={app === undefined}
-                onSelect={() => {
-                  if (app === undefined) return;
-                  const current = app;
-                  setNameDialog({
-                    key: `rename-app-${current.id}`,
-                    title: "Rename app",
-                    description: "Change the organizational name for this app.",
-                    label: "App name",
-                    initialValue: current.name,
-                    submitLabel: "Rename app",
-                    onConfirm: (name) => props.onRenameApp(current.id, name),
-                  });
-                }}
-              >
-                Rename app
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                disabled={app === undefined || props.project?.appOrder.length === 1}
-                onSelect={() => {
-                  if (app === undefined) return;
-                  const current = app;
-                  setDeleteDialog({
-                    key: `delete-app-${current.id}`,
-                    title: "Delete app?",
-                    description:
-                      "Every version and deck in this app will be removed from the project, together with their uploaded asset files.",
-                    currentName: current.name,
-                    onConfirm: () => props.onDeleteApp(current.id),
-                  });
-                }}
-              >
-                Delete app…
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          <div className="min-w-40 flex-1 sm:max-w-56">
+          <div className="grid min-w-40 flex-1 gap-1 sm:max-w-56">
+            <span className="px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {WORKSPACE_PICKER_LABELS.version}
+            </span>
             <Select
               value={versionId}
               disabled={busy || app === undefined}
-              onValueChange={(value) => {
-                if (appId !== undefined) {
-                  settle(() => props.onSelectVersion(appId, value as VersionId));
-                }
-              }}
+              onValueChange={(value) =>
+                settle(() => props.onSelectVersion(value as VersionId))
+              }
             >
               <SelectTrigger aria-label="Select version">
                 <SelectValue placeholder="No version" />
@@ -538,27 +446,24 @@ export function WorkspaceBar(props: WorkspaceBarProps) {
             <DropdownMenuContent align="end">
               <DropdownMenuLabel>Version</DropdownMenuLabel>
               <DropdownMenuItem
-                disabled={appId === undefined}
+                disabled={app === undefined}
                 onSelect={() => {
-                  if (appId === undefined) return;
-                  const targetAppId = appId;
                   setNameDialog({
-                    key: `create-version-${targetAppId}`,
+                    key: "create-version",
                     title: "Create new draft",
                     description: "Start a fresh draft version using the current editor axes.",
                     label: "Version name",
                     submitLabel: "Create draft",
-                    onConfirm: (name) => props.onCreateVersion(targetAppId, name),
+                    onConfirm: props.onCreateVersion,
                   });
                 }}
               >
                 <Plus aria-hidden /> New draft
               </DropdownMenuItem>
               <DropdownMenuItem
-                disabled={appId === undefined || versionId === undefined}
+                disabled={versionId === undefined}
                 onSelect={() => {
-                  if (appId === undefined || versionId === undefined) return;
-                  const sourceAppId = appId;
+                  if (versionId === undefined) return;
                   const sourceVersionId = versionId;
                   setNameDialog({
                     key: `clone-version-${sourceVersionId}`,
@@ -568,7 +473,7 @@ export function WorkspaceBar(props: WorkspaceBarProps) {
                     initialValue: `${version?.name ?? "Version"} Copy`,
                     submitLabel: version?.status === "published" ? "Clone to Draft" : "Clone version",
                     onConfirm: (name) =>
-                      props.onCloneVersion(sourceAppId, sourceVersionId, name),
+                      props.onCloneVersion(sourceVersionId, name),
                   });
                 }}
               >
@@ -578,8 +483,7 @@ export function WorkspaceBar(props: WorkspaceBarProps) {
               <DropdownMenuItem
                 disabled={version === undefined || version.status === "published"}
                 onSelect={() => {
-                  if (appId === undefined || version === undefined) return;
-                  const targetAppId = appId;
+                  if (version === undefined) return;
                   const current = version;
                   setNameDialog({
                     key: `rename-version-${current.id}`,
@@ -589,7 +493,7 @@ export function WorkspaceBar(props: WorkspaceBarProps) {
                     initialValue: current.name,
                     submitLabel: "Rename version",
                     onConfirm: (name) =>
-                      props.onRenameVersion(targetAppId, current.id, name),
+                      props.onRenameVersion(current.id, name),
                   });
                 }}
               >
@@ -598,13 +502,12 @@ export function WorkspaceBar(props: WorkspaceBarProps) {
               <DropdownMenuItem
                 disabled={version === undefined || version.status === "published"}
                 onSelect={() => {
-                  if (appId === undefined || version === undefined) return;
-                  const targetAppId = appId;
+                  if (version === undefined) return;
                   const current = version;
                   setPublishDialog({
                     key: `publish-version-${current.id}`,
                     versionName: current.name,
-                    onConfirm: () => props.onPublishVersion(targetAppId, current.id),
+                    onConfirm: () => props.onPublishVersion(current.id),
                   });
                 }}
               >
@@ -619,8 +522,7 @@ export function WorkspaceBar(props: WorkspaceBarProps) {
                   app.versionOrder.length === 1
                 }
                 onSelect={() => {
-                  if (appId === undefined || version === undefined) return;
-                  const targetAppId = appId;
+                  if (version === undefined) return;
                   const current = version;
                   setDeleteDialog({
                     key: `delete-version-${current.id}`,
@@ -628,8 +530,7 @@ export function WorkspaceBar(props: WorkspaceBarProps) {
                     description:
                       "Every deck in this version will be removed, together with the version's uploaded asset files.",
                     currentName: current.name,
-                    onConfirm: () =>
-                      props.onDeleteVersion(targetAppId, current.id),
+                    onConfirm: () => props.onDeleteVersion(current.id),
                   });
                 }}
               >

@@ -1,4 +1,4 @@
-import type { AppId, DeckId, VersionId } from "./ids";
+import type { DeckId, VersionId } from "./ids";
 import type { DeckRecord, ProjectDocumentV3 } from "./project-schema";
 import type { ProjectId, WorkspaceRegistry } from "./workspace";
 
@@ -7,7 +7,6 @@ export interface ProjectSummary {
   name: string;
   revision: number;
   updatedAt: string;
-  appCount: number;
 }
 
 export interface WorkspaceSnapshot {
@@ -32,58 +31,42 @@ export type WorkspaceCommand =
 
 export type ProjectCommand =
   | {
-      action: "createApp";
-      baseRevision: number;
-      name: string;
-      versionName?: string;
-      initialDeck: DeckInput;
-    }
-  | { action: "renameApp"; baseRevision: number; appId: AppId; name: string }
-  | { action: "deleteApp"; baseRevision: number; appId: AppId }
-  | {
       action: "createVersion";
       baseRevision: number;
-      appId: AppId;
       name: string;
       initialDeck: DeckInput;
     }
   | {
       action: "cloneVersion";
       baseRevision: number;
-      appId: AppId;
       sourceVersionId: VersionId;
       name: string;
     }
   | {
       action: "renameVersion";
       baseRevision: number;
-      appId: AppId;
       versionId: VersionId;
       name: string;
     }
   | {
       action: "publishVersion";
       baseRevision: number;
-      appId: AppId;
       versionId: VersionId;
     }
   | {
       action: "deleteVersion";
       baseRevision: number;
-      appId: AppId;
       versionId: VersionId;
     }
   | {
       action: "createDeck";
       baseRevision: number;
-      appId: AppId;
       versionId: VersionId;
       deck: DeckInput;
     }
   | {
       action: "updateDeck";
       baseRevision: number;
-      appId: AppId;
       versionId: VersionId;
       deckId: DeckId;
       changes: Partial<Omit<DeckRecord, "id">>;
@@ -91,14 +74,12 @@ export type ProjectCommand =
   | {
       action: "deleteDeck";
       baseRevision: number;
-      appId: AppId;
       versionId: VersionId;
       deckId: DeckId;
     }
   | {
-      action: "selectAppVersion";
+      action: "selectVersion";
       baseRevision: number;
-      appId: AppId;
       versionId: VersionId;
       deckId?: DeckId;
       slideId?: string;
@@ -106,7 +87,6 @@ export type ProjectCommand =
   | {
       action: "selectDeck";
       baseRevision: number;
-      appId: AppId;
       versionId: VersionId;
       deckId: DeckId;
       slideId?: string;

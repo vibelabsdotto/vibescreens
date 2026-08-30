@@ -1,12 +1,13 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { AppId, DeckId, VersionId } from "../ids";
 import { createProjectDocument, publishVersion } from "../project-operations";
-import { projectDocumentPath } from "../project-paths";
+
 import {
   ProjectAlreadyExistsError,
   ProjectIdentityMismatchError,
@@ -14,6 +15,7 @@ import {
   createProjectRepository,
 } from "../project-repository";
 import type { ProjectDocumentV3 } from "../project-schema";
+import { vibeScreensDatabasePath } from "../sqlite-storage";
 import type { ProjectId } from "../workspace";
 
 const PROJECT_ID = "prj_repository" as ProjectId;
@@ -94,25 +96,21 @@ describe("project repository", () => {
     expect(
       saved.appsById[APP_ID].versionsById[VERSION_ID].decksById[DECK_ID].appName,
     ).toBe("Changed");
-    const bytes = await readFile(projectDocumentPath(rootDir, PROJECT_ID), "utf8");
-    expect(JSON.parse(bytes)).toEqual(saved);
+    await expect(repository.read(PROJECT_ID)).resolves.toEqual(saved);
   });
 
   it("rejects stale writes with current metadata and leaves the durable bytes unchanged", async () => {
     const { rootDir, repository } = await useRepository();
     await repository.create(makeProject());
     const firstCandidate = makeProject();
-    firstCandidate.appsById[APP_ID].name = "First";
+    firstCandidate.appsById[APP_ID].versionsById[VERSION_ID].decksById[DECK_ID].appName = "First";
     const first = await repository.saveDraft({
       projectId: PROJECT_ID,
       baseRevision: 1,
       document: firstCandidate,
       now: later,
     });
-    const beforeConflict = await readFile(
-      projectDocumentPath(rootDir, PROJECT_ID),
-      "utf8",
-    );
+    const beforeConflict = await repository.read(PROJECT_ID);
 
     let conflict: unknown;
     try {
@@ -135,9 +133,7 @@ describe("project repository", () => {
       },
     });
     expect(first.revision).toBe(2);
-    await expect(
-      readFile(projectDocumentPath(rootDir, PROJECT_ID), "utf8"),
-    ).resolves.toBe(beforeConflict);
+    await expect(repository.read(PROJECT_ID)).resolves.toEqual(beforeConflict);
   });
 
   it("serializes concurrent same-base writes so exactly one succeeds", async () => {
@@ -145,8 +141,8 @@ describe("project repository", () => {
     await repository.create(makeProject());
     const firstCandidate = makeProject();
     const secondCandidate = makeProject();
-    firstCandidate.appsById[APP_ID].name = "First";
-    secondCandidate.appsById[APP_ID].name = "Second";
+    firstCandidate.appsById[APP_ID].versionsById[VERSION_ID].decksById[DECK_ID].appName = "First";
+    secondCandidate.appsById[APP_ID].versionsById[VERSION_ID].decksById[DECK_ID].appName = "Second";
 
     const results = await Promise.allSettled([
       repository.saveDraft({
@@ -170,6 +166,21 @@ describe("project repository", () => {
     expect(rejected).toHaveLength(1);
     expect(rejected[0].reason).toBeInstanceOf(ProjectRevisionConflictError);
     expect((await repository.read(PROJECT_ID)).revision).toBe(2);
+  });
+
+  it("prevents generic saves from changing the internal App wrapper", async () => {
+    const { repository } = await useRepository();
+    const project = makeProject();
+    await repository.create(project);
+    const candidate = structuredClone(project);
+    candidate.appsById[APP_ID].name = "Hidden second product";
+
+    await expect(repository.saveDraft({
+      projectId: PROJECT_ID,
+      baseRevision: 1,
+      document: candidate,
+      now: later,
+    })).rejects.toBeInstanceOf(ProjectIdentityMismatchError);
   });
 
   it("prevents client saves from mutating published content", async () => {
@@ -235,7 +246,7 @@ describe("project repository", () => {
     ).rejects.toThrow("Published version");
   });
 
-  it("prunes unreachable draft asset entries in client draft saves", async () => {
+  it("preserves registered draft assets until explicit garbage collection", async () => {
     const { repository } = await useRepository();
     const project = makeProject();
     const shaA = "1".repeat(64);
@@ -277,7 +288,7 @@ describe("project repository", () => {
       now: later,
     });
 
-    expect(Object.keys(saved.assetsById)).toEqual(["asset_a"]);
+    expect(Object.keys(saved.assetsById)).toEqual(["asset_a", "asset_orphan"]);
   });
 
   it("rejects identity changes and traversal IDs before writing", async () => {
@@ -299,7 +310,7 @@ describe("project repository", () => {
   });
 
   it("moves a project to trash under the same per-project serialization boundary", async () => {
-    const { repository } = await useRepository();
+    const { rootDir, repository } = await useRepository();
     await repository.create(makeProject());
 
     const moved = await repository.moveToTrash(
@@ -309,10 +320,11 @@ describe("project repository", () => {
 
     expect(moved).toMatchObject({ status: "moved" });
     await expect(repository.read(PROJECT_ID)).rejects.toThrow("does not exist");
-    if (moved.status === "moved") {
-      await expect(
-        readFile(join(moved.trashPath, "vibescreens.json"), "utf8"),
-      ).resolves.toContain('"projectId": "prj_repository"');
-    }
+    const database = new DatabaseSync(vibeScreensDatabasePath(rootDir), { readOnly: true });
+    const trashed = database
+      .prepare("SELECT document FROM project_trash WHERE project_id = ?")
+      .get(PROJECT_ID) as { document: string };
+    database.close();
+    expect(JSON.parse(trashed.document)).toMatchObject({ projectId: PROJECT_ID });
   });
 });

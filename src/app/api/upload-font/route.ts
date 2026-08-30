@@ -4,12 +4,15 @@ import {
   createAssetUploadService,
   type AssetUploadService,
 } from "../../../lib/asset-upload-service";
+import {
+  hasValidFontSignature,
+  MAX_FONT_ASSET_BYTES,
+} from "../../../lib/asset-content";
 import { rejectCrossSiteMultipartWrite } from "../../../lib/request-guard";
 import { apiErrorResponse, HttpRequestError } from "../../../lib/server-http";
 
 export const dynamic = "force-dynamic";
 
-const MAX_FONT_BYTES = 16 * 1024 * 1024;
 const FONT_TYPES = {
   woff2: { format: "woff2", mime: "font/woff2", signature: "wOF2" },
   woff: { format: "woff", mime: "font/woff", signature: "wOFF" },
@@ -54,17 +57,6 @@ function fontExtension(filename: string): FontExtension {
   return extension as FontExtension;
 }
 
-function fontContentMatches(bytes: Buffer, extension: FontExtension): boolean {
-  if (bytes.byteLength < 4) return false;
-  if (extension === "ttf") {
-    return (
-      (bytes[0] === 0x00 && bytes[1] === 0x01 && bytes[2] === 0x00 && bytes[3] === 0x00) ||
-      bytes.subarray(0, 4).toString("ascii") === "true"
-    );
-  }
-  return bytes.subarray(0, 4).toString("ascii") === FONT_TYPES[extension].signature;
-}
-
 export function createUploadFontRouteHandlers(service: AssetUploadService) {
   return {
     async POST(request: Request) {
@@ -87,7 +79,7 @@ export function createUploadFontRouteHandlers(service: AssetUploadService) {
         }
         const originalName = plainFilename(file.name);
         const extension = fontExtension(originalName);
-        if (file.size > MAX_FONT_BYTES) {
+        if (file.size > MAX_FONT_ASSET_BYTES) {
           throw new HttpRequestError(
             413,
             "Font file is too large (16MB maximum).",
@@ -96,7 +88,7 @@ export function createUploadFontRouteHandlers(service: AssetUploadService) {
         }
 
         const bytes = Buffer.from(await file.arrayBuffer());
-        if (!fontContentMatches(bytes, extension)) {
+        if (!hasValidFontSignature(bytes, extension)) {
           throw new HttpRequestError(
             400,
             "Font content does not match its file extension.",
@@ -104,10 +96,18 @@ export function createUploadFontRouteHandlers(service: AssetUploadService) {
           );
         }
         const fontType = FONT_TYPES[extension];
+        const projectId = optionalFormString(form, "projectId");
+        const versionId = optionalFormString(form, "versionId");
+        if (projectId === undefined || versionId === undefined) {
+          throw new HttpRequestError(
+            400,
+            "projectId and versionId are required",
+            "invalid_target",
+          );
+        }
         const result = await service.uploadAsset({
-          projectId: optionalFormString(form, "projectId"),
-          appId: optionalFormString(form, "appId"),
-          versionId: optionalFormString(form, "versionId"),
+          projectId,
+          versionId,
           kind: "font",
           extension,
           originalName,
@@ -117,7 +117,6 @@ export function createUploadFontRouteHandlers(service: AssetUploadService) {
         return NextResponse.json({
           ok: true,
           font: { src: result.asset.url, format: fontType.format },
-          asset: result.asset,
           project: result.project,
           revision: result.project.revision,
         });
