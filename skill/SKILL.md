@@ -1,149 +1,216 @@
 ---
 name: vibescreens
-description: Use when building App Store, Microsoft Store, or Google Play screenshot pages, generating exportable marketing screenshots for iOS, Android, macOS, and/or Windows apps, or scaffolding a screenshot editor with Next.js. Triggers on app store, play store, microsoft store, screenshots, marketing assets, html-to-image, device mockup, desktop screenshots, feature graphic.
+description: Use when operating VibeScreens via its editor or CLI. Validated domain commands for projects, versions, decks, slides, assets, and exports.
+version: 3.0.0
+author: Max Mannstein, Hermes Agent
+license: MIT
+platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [app-store, screenshots, marketing, nextjs, cli]
 ---
 
 # VibeScreens
 
-## Overview
+Build and operate the VibeScreens Next.js editor for Apple App Store, Google Play, and Microsoft Store marketing screenshots. Use the editor for visual review and export; use its TypeScript CLI for durable mutations.
 
-Scaffold a pre-built Next.js + ShadCN editor that lets the user design and export App Store **and** Google Play screenshots as **advertisements** (not UI showcases). The editor handles all the heavy lifting:
+## When to Use
 
-- Connected live preview at the canvas's true resolution (scaled to fit)
-- Drag-to-reorder screens, inline text editing, layout switcher per screen
-- Cross-screen mockups: phone/device frames, captions, and layered elements can be moved across adjacent screens, then exported as clipped crops
-- Drop-target screenshot picker (file → saved to `public/screenshots/uploaded/<hash>.png`)
-- Auto-save to **`vibescreens.json`** at the project root (git-trackable) + `localStorage` mirror
-- Easy iOS ↔ Android ↔ Desktop platform switch — separate slide decks live side by side
-- One-click bulk PNG export at every Apple/Google-required resolution via `html-to-image`
-- Light/dark variant toggle per slide, theme presets, locale select
-- Per-slide custom background colors, live theme and font selection, and importing licensed WOFF2/WOFF/TTF/OTF fonts
-- Image overlay elements with drag/resize/rotation/layering controls and directional edge fades
-- Toolbar Undo/Redo with 25-step in-session history
-- Guided in-place migration for older projects created by this skill; passive and explicit migrations keep legacy decks isolated until the user intentionally opts into connected canvas
+Use this skill when the user asks to:
 
-Supported devices out of the box:
-- **iPhone** (portrait) — Apple App Store
-- **iPad** (portrait) — Apple App Store
-- **Apple TV** (landscape) — Apple App Store
-- **Apple Watch** (portrait) — Apple App Store
-- **CarPlay** (landscape) — exports into an **iPhone** slot, see below
-- **Android Phone** (portrait) — Google Play
-- **Android Tablet 7"** (portrait + landscape) — Google Play
-- **Android Tablet 10"** (portrait + landscape) — Google Play
-- **Feature Graphic** (1024×500 banner) — Google Play store listing header
-- **macOS** (16:10 desktop window) — Mac App Store and product listings
-- **Windows** (16:9 desktop window) — Microsoft Store and product listings
+- create or revise app-store screenshots;
+- manage VibeScreens projects, releases, device decks, slides, or locales;
+- add screenshot copy or source captures;
+- migrate an older VibeScreens workspace;
+- generate store-ready PNG bundles.
+
+Do not hand-build a replacement `page.tsx`, write `.vibescreens/vibescreens.db`, or serialize internal TypeScript project types.
 
 ## Core Principle
 
-**Screenshots are advertisements, not documentation.** Every screenshot sells one idea. If you're showing UI, you're doing it wrong — you're selling a *feeling*, an *outcome*, or killing a *pain point*. Use this skill's interactive editor to iterate on copy and layout fast; do not hand-craft the page from scratch.
+**Screenshots are advertisements, not documentation.** Each slide should sell one outcome, feeling, or resolved pain point. UI captures support that message; they are not the message.
 
-## What This Skill Does
+## Prerequisites
 
-1. **Copies a pre-built template** from `template/` (co-located with this `SKILL.md`) into the user's working directory.
-2. Installs dependencies with the user's package manager.
-3. Drops the user's screenshots into `public/screenshots/...` and their app icon into `public/`.
-4. (Optionally) prefills `vibescreens.json` with the user's app name, starting copy, screenshots, and connected-canvas preference so the first preview is meaningful.
-5. Starts the dev server and tells the user to open the editor in the browser.
+- Node.js 22.5 or newer
+- npm, pnpm, yarn, or bun
+- A VibeScreens runtime checkout
+- Source screenshots and app icon when the user has them
 
-You should NOT write `page.tsx`, device frames, or export logic by hand. They live in the template.
+A new standalone editor can start from the VibeScreens repository. Do not overwrite an existing application checkout to scaffold it. Use a separate folder unless the user explicitly asks for in-place integration.
 
-## Step 0: Probe for Existing Screenshot Projects
+## CLI Contract
 
-Before asking the new-project questions in Step 1, always inspect the current working directory for an existing VibeScreens implementation or a project generated by the legacy skill.
-
-Run lightweight probes:
+From the VibeScreens runtime root, inspect the live command index first:
 
 ```bash
-test -f package.json && sed -n '1,220p' package.json
-for state_file in vibescreens.json app-store-screenshots.json; do
-  test -f "$state_file" && sed -n '1,120p' "$state_file"
-done
-rg -n "vibescreens|app-store-screenshots|html-to-image|toPng|ScreenshotEditor|DeckCanvas|connectedCanvas|EXPORT_SIZES|mockup.png|PHONE_SCREEN" package.json src app public 2>/dev/null
-find public -maxdepth 4 \( -path "*/screenshots*" -o -name "mockup.png" -o -name "app-icon.png" \) -print 2>/dev/null
+npm run cli -- --help
 ```
 
-Treat the project as an older implementation when any of these are true:
+Commands emit JSON on stdout and structured errors on stderr. Exit code `0` means success, `1` means a domain/storage failure, and `2` means invalid arguments. Optional `--project`, `--version`, and `--deck` flags override the saved active selection. Slide and element mutations require an explicit `--slide` target.
 
-- `vibescreens.json` or the legacy `app-store-screenshots.json` exists but has no `schemaVersion`, has `schemaVersion < 2`, or lacks `connectedCanvas`.
-- `src/components/editor/screenshot-editor.tsx` exists but the editor does not reference `DeckCanvas` or `connectedCanvas`.
-- `src/app/page.tsx` contains a previous all-in-one generator (`html-to-image`, `toPng`, `EXPORT_SIZES`, `PHONE_SCREEN`, hardcoded slide arrays/themes).
-- The repo contains the old screenshot asset layout (`public/mockup.png`, `public/screenshots...`) plus a screenshot generator package setup.
+The CLI resolves revisions and routes writes through domain services. Never compensate for a missing command by editing SQLite, old JSON files, or `src/lib` data structures. Public navigation is Project → Version → Deck → Slide; schema v3's `AppRecord` wrapper is internal compatibility state.
 
-If an older implementation is detected, ask exactly one question before doing anything else:
+## Quick Reference
 
-> I found an older VibeScreens project here. Do you want me to migrate this existing project to the new connected-canvas editor?
->
-> 1. Yes — migrate the existing project to the new editor
-> 2. No — set up or modify a project another way
-
-If the user chooses **Yes**, do **not** ask the Step 1 questionnaire. Run the migration path below using the files already in the repo. If the user chooses **No**, continue to Step 1.
-
-### Migration Path (When User Says Yes)
-
-The goal is an in-place UI/template upgrade, not a redesign. Preserve the user's existing app name, copy, screenshot paths, app icon, uploaded assets, locales, and device decks wherever they already exist. Replace the old UI implementation with the current template. Keep legacy decks in isolated export mode unless the project already explicitly opted into connected canvas.
-
-Migration rules:
-
-1. **Do not ask further product/design questions.** The user already has a project. Infer from existing files and report any non-blocking gaps at the end.
-2. **Never delete user assets.** Preserve `public/screenshots/`, `public/app-icon.png`, uploaded screenshots, `vibescreens.json`, and the legacy `app-store-screenshots.json` when present.
-3. **Preserve recoverability.** If the worktree is not clean, do not revert unrelated changes. Before overwriting template files, copy replaced project-state/assets/code snapshots to a temporary backup outside the repo (for example `/tmp/vibescreens-migration-<timestamp>/`) and mention the path in the final response.
-4. **Prefer structured migration.** Read `vibescreens.json` when present, otherwise read the legacy `app-store-screenshots.json`. Write migrated state to `vibescreens.json` with JSON tooling and leave the legacy file untouched. Do not regex-edit JSON.
-5. **Set `schemaVersion: 2` and keep legacy `connectedCanvas` safe.** If the existing project already has an explicit boolean `connectedCanvas`, preserve it. If the project is pre-v2 or lacks the flag, write `"connectedCanvas": false` so offscreen/clipped legacy mockups do not leak into neighboring exports. New projects still default to connected canvas.
-6. **Keep screenshots pointed at existing files.** Do not rename screenshot files unless the old project already depended on numeric names and the migration needs them. Existing static paths are fine.
-7. **Handle custom themes without asking.** If the old project references a custom `themeId`, merge the matching theme object into the new `src/lib/constants.ts` when it can be found. If it cannot be recovered, leave the `themeId` in project JSON; the editor will fall back to `clean-light` and warn, and you should note that a custom theme needs manual restoration.
-8. **Merge package metadata when possible.** The template's dependencies and scripts must win for the screenshot editor, but preserve unrelated existing `dependencies`, `devDependencies`, and useful scripts unless they directly conflict.
-9. **Do not import template sample decks into real migrations.** If the old project already has decks or screenshots, use the template for UI/code only. Keep template sample screenshots/decks out of the migrated project so the user's app does not inherit unrelated example content.
-10. **Use a disposable copy for dogfooding.** If the user asks to test or review the migration instead of actually migrating their project, copy the app to a temp directory or worktree and run the migration there. Only touch the real checkout when the user explicitly asks for the real migration and answers **Yes**.
-
-Recommended migration sequence:
+### Workspace and projects
 
 ```bash
-# 1. Snapshot useful old files outside the repo.
-STAMP=$(date +%Y%m%d-%H%M%S)
-BACKUP_DIR="/tmp/vibescreens-migration-$STAMP"
-mkdir -p "$BACKUP_DIR"
-cp -R vibescreens.json app-store-screenshots.json public src package.json tailwind.config.ts next.config.mjs "$BACKUP_DIR/" 2>/dev/null || true
-
-# 2. Preserve project state and assets that must survive template copy.
-PRESERVE_DIR="$BACKUP_DIR/preserve"
-mkdir -p "$PRESERVE_DIR"
-cp vibescreens.json app-store-screenshots.json "$PRESERVE_DIR/" 2>/dev/null || true
-cp -R public/screenshots "$PRESERVE_DIR/screenshots" 2>/dev/null || true
-cp public/app-icon.png "$PRESERVE_DIR/app-icon.png" 2>/dev/null || true
-
-# 3. Copy the current template over the old UI implementation.
-cp -R "<SKILL_DIR>/template/." "$PWD/"
-cp vibescreens.json "$BACKUP_DIR/template-vibescreens.json" 2>/dev/null || true
-
-# 4. Restore preserved user state/assets over template samples.
-if [ -f "$PRESERVE_DIR/vibescreens.json" ]; then
-  cp "$PRESERVE_DIR/vibescreens.json" vibescreens.json
-elif [ -f "$PRESERVE_DIR/app-store-screenshots.json" ]; then
-  cp "$PRESERVE_DIR/app-store-screenshots.json" vibescreens.json
-fi
-mkdir -p public
-if [ -d "$PRESERVE_DIR/screenshots" ]; then
-  mkdir -p "$BACKUP_DIR/template-samples/public"
-  mv public/screenshots "$BACKUP_DIR/template-samples/public/screenshots" 2>/dev/null || true
-  cp -R "$PRESERVE_DIR/screenshots" public/screenshots
-else
-  mkdir -p public/screenshots
-fi
-cp "$PRESERVE_DIR/app-icon.png" public/app-icon.png 2>/dev/null || true
+npm run cli -- workspace show
+npm run cli -- workspace import
+npm run cli -- project list
+npm run cli -- project show --project prj_...
+npm run cli -- project create --name "My App"
+npm run cli -- project select --project prj_...
+npm run cli -- project rename --project prj_... --name "New Name"
+npm run cli -- project delete --project prj_...
 ```
 
-After copying, upgrade or create `vibescreens.json`. If `vibescreens.json` exists, coerce it in place. Otherwise, read the legacy `app-store-screenshots.json`, write the upgraded state to `vibescreens.json`, and keep the legacy file as a recoverable source. If neither project file exists but old slide data is embedded in `src/lib/defaults.ts` or `src/app/page.tsx`, extract it best-effort into the template's project JSON before falling back to starter slides. Prefer old arrays or objects named `slides`, `screens`, `features`, `defaultSlides`, `appName`, `tagline`, `theme`, and screenshot paths. If the old implementation only has image files, sort `public/screenshots/**` by path and seed slides from those files.
-
-Use a small JSON script like this for the final project-state coercion:
+### Versions
 
 ```bash
-BACKUP_DIR="$BACKUP_DIR" node <<'NODE'
-const fs = require("fs");
-const path = require("path");
+npm run cli -- version list
+npm run cli -- version create --name "2.0" --locale en
+npm run cli -- version clone --version ver_... --name "2.1"
+npm run cli -- version select --version ver_...
+npm run cli -- version rename --version ver_... --name "2.1 Spring"
+npm run cli -- version publish --version ver_...
+npm run cli -- version delete --version ver_...
+```
 
-const PROJECT_FILE = "vibescreens.json";
-const LEGACY_PROJECT_FILE = "app-store-screenshots.json";
-const DEFAULT_LOCALE = "en";
-const DEVICE_KEYS = ["iphone", "ipad", "tvos", "watchos", "carplay", "android", "android-7", "android-10", "macos", "windows", "feature-graphic"];
+There are no public `app ...` commands and no `--app` flag. Create one project per advertised app; the CLI resolves the internal schema-v3 wrapper itself.
+
+### Decks and locales
+
+```bash
+npm run cli -- deck list
+npm run cli -- deck create --device iphone --orientation portrait --locale de
+npm run cli -- deck select --deck deck_...
+npm run cli -- deck update --deck deck_... --theme clean-light --connected-canvas true
+npm run cli -- deck reset --deck deck_...
+npm run cli -- deck delete --deck deck_...
+```
+
+A deck is one unique device, orientation, and locale tuple. Add a German language target with `deck create --locale de`; do not mutate the locale of an unrelated deck unless the user wants to replace that tuple.
+
+### Slides
+
+```bash
+npm run cli -- slide list
+npm run cli -- slide add --headline "Plan faster" --label "FOCUS" --layout hero
+npm run cli -- slide duplicate --slide slide-...
+npm run cli -- slide reorder --slide slide-... --index 0
+npm run cli -- slide update --slide slide-... --headline "Ship faster" --inverted true --background '#111827' --headline-scale 1.1
+npm run cli -- slide delete --slide slide-...
+```
+
+Supported layouts are `hero`, `device-bottom`, `device-top`, `two-devices`, `no-device`, `split-landscape`, and `feature-graphic`. Text flags write to the selected deck's locale.
+
+### Built-in, text, and image elements
+
+```bash
+npm run cli -- element list --slide slide-...
+npm run cli -- element update --slide slide-... --element device --x 90 --y 240 --width 680 --height 1360 --rotation -4 --z-index 2
+npm run cli -- element add --slide slide-... --type text --id proof --text "No spreadsheet required" --font-size 48 --font-weight 700
+npm run cli -- element update --slide slide-... --element proof --text "No setup required" --color '#ffffff'
+npm run cli -- element add --slide slide-... --type image --id badge --src /vibescreens-assets/.../badge.png --fit contain --fade-edge right --fade-amount 35
+npm run cli -- element reorder --slide slide-... --element badge --position front
+npm run cli -- element delete --slide slide-... --element badge
+```
+
+Transform widths and heights must be positive. Image fade amounts use the editor's `1..100` scale.
+
+### Assets
+
+Create the slide first, then import and attach its source capture atomically:
+
+```bash
+npm run cli -- asset import \
+  --file ./captures/home.png \
+  --kind screenshot \
+  --slide slide-... \
+  --field screenshot
+```
+
+Other attachment forms:
+
+```bash
+npm run cli -- asset import --file ./captures/detail.jpg --kind screenshot --slide slide-... --field screenshot-secondary
+npm run cli -- asset import --file ./art/badge.png --kind image --slide slide-... --field image --x 80 --y 120 --width 320 --height 320
+npm run cli -- asset import --file ./app-icon.png --kind app-icon --field app-icon
+npm run cli -- asset import --file ./Brand.woff2 --kind font --field font
+npm run cli -- asset list
+```
+
+Image assets accept PNG/JPEG with magic-byte validation. Fonts accept WOFF2, WOFF, TTF, and OTF. The command stores bytes by SHA-256, registers the asset, and attaches it in one revisioned mutation.
+
+Re-import an image with the same `--element-id` to replace that element's source without creating a duplicate. Add `--rotation` and `--z-index` to set its full editor transform during import.
+
+### Export
+
+```bash
+npm run cli -- export plan --scope current
+npm run cli -- export plan --scope selected --versions ver_a,ver_b
+npm run cli -- export bundle --scope current --output ./exports/current.zip
+npm run cli -- export bundle --scope all --include-drafts true --output ./exports/all.zip --url http://127.0.0.1:8010
+```
+
+`export plan` is read-only and reports manifest, jobs, and preflight errors. `export bundle` drives the existing editor export UI in headless Chrome, captures the same downloaded ZIP, verifies the project revision, scope, `manifest.json`, and PNG count, then publishes it to `--output` without overwriting a competing file. The target project must be active in the editor server. The default URL is `http://127.0.0.1:8010`; the CLI never starts the server.
+
+## Procedure
+
+1. **Probe the current folder.** Confirm `package.json`, the VibeScreens scripts, Git status, and whether `.vibescreens/`, root `vibescreens.json`, or `app-store-screenshots.json` exists. Do not print entire databases or user content.
+2. **Install and verify.** Install dependencies with the repo's package manager, then run `npm run cli -- --help`. Stop if Node is older than 22.5.
+3. **Migrate safely.** `workspace show` imports the previous `.vibescreens/workspace.json` plus registered schema-v3 project JSON files when the SQLite database is empty. Use `workspace import` for a root legacy `vibescreens.json` or `app-store-screenshots.json`. Original JSON and migration backups remain untouched.
+4. **Inspect before mutating.** Run `workspace show`, then list the target versions, decks, slides, elements, and assets. Use returned IDs exactly.
+5. **Collect the creative brief.** Confirm app outcome, audience, priority features, stores, devices, locales, slide count, visual direction, and source assets. If these were already provided, do not ask again.
+6. **Build the hierarchy through CLI commands.** Create or select the project, draft version, and one deck per requested device/orientation/locale tuple.
+7. **Write ad-oriented slides.** Use short copy, one outcome per slide, varied layouts, and clear thumbnail hierarchy. Add and update slides through the CLI.
+8. **Attach assets through the CLI.** Never copy an uploaded file into an arbitrary managed path and never insert asset registry rows manually.
+9. **Review in the editor.** Use the existing dev server. If port `8010` is down, ask the user to start it rather than spawning a duplicate. Check every deck, connected-canvas boundary, text fit, RTL behavior, and source-image crop.
+10. **Verify.** Run tests, typecheck, and build. Run `export plan`, then create and inspect a proof ZIP through `export bundle` before publishing a version.
+
+## Legacy and Recovery Rules
+
+- `.vibescreens/vibescreens.db` is authoritative after migration.
+- Previous `.vibescreens/workspace.json` and project JSON files are one-time import sources and remain rollback material.
+- Root legacy files remain unchanged after import; exact backups live under `.vibescreens/backups/`.
+- A schema newer than the runtime supports is read-only. Never downgrade it.
+- Preserve `public/vibescreens-assets/` and all old screenshot sources.
+- Published versions are immutable. Clone one into a draft before changing it.
+
+## Design Guardrails
+
+- One clear promise per slide
+- Headlines readable at thumbnail size
+- Layout rhythm across adjacent slides
+- Critical text and UI stay inside export-safe crop bounds
+- Connected-canvas elements still produce useful individual exports
+- RTL locales receive intentional alignment and composition
+- Platform frames and export sizes match the target store
+
+## Pitfalls
+
+- **Direct persistence edits:** bypass revision checks and can corrupt workspace/project relationships.
+- **Inventing an App layer:** a project is the app. Do not look for an App picker or pass internal `appId` values to the CLI.
+- **Missing locale choice:** create/select a locale deck; the toolbar always exposes English and German plus existing locales.
+- **Unattached assets:** asset import validates the target, transform, magic bytes, and attachment before storing bytes. Canonical content-addressed files are never synchronously deleted after a save conflict because a concurrent successful import may reference them.
+- **Published-version writes:** clone first; do not work around the lock.
+- **`localStorage` confusion:** it is a UI cache, never durable authority.
+- **Starting duplicate servers:** `export bundle` requires the existing editor server; check port `8010` rather than launching another process.
+
+## Verification
+
+Before reporting completion:
+
+```bash
+npm test
+npm run typecheck
+npm run build
+npm run cli -- --help
+npm run cli -- workspace show
+npm run cli -- slide list
+npm run cli -- export plan --scope current
+```
+
+Then verify the editor loads with Project and Version selectors only, locale selection creates or selects the intended deck, uploaded assets render, custom slide backgrounds render, and `export bundle` produces a ZIP whose manifest and PNG count match the plan.

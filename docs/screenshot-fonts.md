@@ -13,10 +13,10 @@ Use the **Font** menu in the toolbar to change the typeface used on the screensh
 ## Adding your own font
 
 1. Choose **Import a font** in the toolbar, then select **Import font**.
-2. Choose a licensed WOFF2, WOFF, TTF, or OTF file. It is copied to `public/fonts/imported/` and used immediately in previews and exports.
-3. You can also add a WOFF2, WOFF, TTF, or OTF file manually as `public/fonts/imported/custom-screenshot-font.<extension>`, choose **Import a font**, and the editor uses it when no imported file has been selected.
+2. Choose a licensed WOFF2, WOFF, TTF, or OTF file. It is validated, stored under the version-scoped `public/vibescreens-assets/` tree, registered in the project, and used immediately in previews and exports.
+3. To automate the same operation, use `npm run cli -- asset import --file ./Brand.woff2 --kind font --field font` instead of copying files into `public/` manually.
 
-The selected font is saved in `vibescreens.json` as `fontId`.
+The selected font is saved in the active SQLite project as `fontId`.
 
 ## Relevant code
 

@@ -11,7 +11,7 @@ The screenshot editor supports image overlays on every non-feature-graphic slide
 5. Drag, resize, rotate, and reorder the image. Choose **Fill frame** to crop or **Keep whole image** to preserve its full shape.
 6. Use **Edge fade** to feather the image into the background from the top, bottom, left, or right. **Fade strength** controls the feather. The opposite edge always stays fully visible. At 100%, the selected edge is fully transparent through its outer quarter, then it feathers into a fully solid opposite quarter.
 
-The editor saves uploaded assets under `public/screenshots/uploaded/` when its local API is available. Each image element is saved in `vibescreens.json`, so its source, placement, rotation, layering, and fit mode are retained across refreshes and included in exports.
+The editor saves uploaded assets under its scoped `public/vibescreens-assets/` tree when its local API is available. Each image element is saved in the active SQLite project, so its source, placement, rotation, layering, and fit mode are retained across refreshes and included in exports.
 
 ## Implementation
 

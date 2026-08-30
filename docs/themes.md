@@ -2,7 +2,7 @@
 
 Use the **Theme** menu in the toolbar to preview and apply a color system across the entire screenshot deck. Each option shows its background and accent colors before you choose it.
 
-Changing a theme updates every slide immediately and saves the selected theme in `vibescreens.json`. It changes the canvas background, text colors, muted text, accent details, and each slide’s alternate background. It does not change screenshot images, text, layouts, or element placement.
+Changing a theme updates every slide immediately and saves the selected theme in the active SQLite project. It changes the canvas background, text colors, muted text, accent details, and each slide’s alternate background. It does not change screenshot images, text, layouts, or element placement.
 
 ## Included themes
 
