@@ -56,7 +56,6 @@ export interface ExportPreflightIssue {
   code: ExportPreflightIssueCode;
   severity: "error" | "warning";
   message: string;
-  appId: AppId;
   versionId: VersionId;
   deckId?: DeckId;
   slideId?: string;
@@ -82,9 +81,7 @@ export interface ExportJob {
 }
 
 export interface ExportVersionMetadata {
-  schemaVersion: 1;
-  appId: AppId;
-  appName: string;
+  schemaVersion: 2;
   versionId: VersionId;
   versionName: string;
   status: VersionStatus;
@@ -109,8 +106,6 @@ export interface ExportVersionPlan {
 }
 
 export interface ExportManifestVersion {
-  appId: AppId;
-  appName: string;
   versionId: VersionId;
   versionName: string;
   status: VersionStatus;
@@ -131,8 +126,15 @@ export interface NormalizedExportScope {
   deckIds: readonly DeckId[];
 }
 
+export interface ExportManifestScope {
+  kind: ExportScope["kind"];
+  includeDrafts?: boolean;
+  versionIds: readonly VersionId[];
+  deckIds: readonly DeckId[];
+}
+
 export interface ExportManifest {
-  schemaVersion: 1;
+  schemaVersion: 2;
   createdAt: string;
   rendererVersion: string;
   complete: boolean;
@@ -144,11 +146,10 @@ export interface ExportManifest {
     revision: number;
     updatedAt: string;
   };
-  scope: NormalizedExportScope;
+  scope: ExportManifestScope;
   versions: readonly ExportManifestVersion[];
   jobs: readonly {
     id: string;
-    appId: AppId;
     versionId: VersionId;
     deckId: DeckId;
     slideId: string;
@@ -357,7 +358,6 @@ function makeIssue(
     code,
     severity,
     message,
-    appId: resolved.app.id,
     versionId: resolved.version.id,
     ...(deck === undefined ? {} : { deckId: deck.id }),
     ...(slideId === undefined ? {} : { slideId }),
@@ -492,10 +492,8 @@ async function preflightVersion(
   return issues;
 }
 
-function versionDirectory(app: AppRecord, version: VersionRecord): string {
+function versionDirectory(version: VersionRecord): string {
   return [
-    "apps",
-    `${slugSegment(app.name, "app")}--${shortId(app.id)}`,
     "versions",
     `${slugSegment(version.name, "version")}--${shortId(version.id)}`,
   ].join("/");
@@ -582,6 +580,15 @@ function normalizedScope(
   };
 }
 
+function manifestScope(scope: NormalizedExportScope): ExportManifestScope {
+  return {
+    kind: scope.kind,
+    ...(scope.includeDrafts === undefined ? {} : { includeDrafts: scope.includeDrafts }),
+    versionIds: scope.versions.map(({ versionId }) => versionId),
+    deckIds: scope.deckIds,
+  };
+}
+
 export async function buildExportPlan(
   document: ProjectDocumentV3,
   scope: ExportScope,
@@ -620,7 +627,7 @@ export async function buildExportPlan(
   const jobs: ExportJob[] = [];
   const versions: ExportVersionPlan[] = [];
   for (const item of resolved) {
-    const directory = versionDirectory(item.app, item.version);
+    const directory = versionDirectory(item.version);
     const metadataPath = `${directory}/version.json`;
     assertUniquePath(metadataPath, paths);
     const issues =
@@ -635,9 +642,7 @@ export async function buildExportPlan(
     }
 
     const metadata: ExportVersionMetadata = {
-      schemaVersion: 1,
-      appId: item.app.id,
-      appName: item.app.name,
+      schemaVersion: 2,
       versionId: item.version.id,
       versionName: item.version.name,
       status: item.version.status,
@@ -667,14 +672,19 @@ export async function buildExportPlan(
     });
   }
 
+  const versionIds = versions.map((version) => version.versionId);
+  if (new Set(versionIds).size !== versionIds.length) {
+    throw new ExportPlanError(
+      "invalid_document",
+      "Version IDs must be unique across a Project before export",
+    );
+  }
   const normalized = normalizedScope(scope, resolved);
   const createdAt = options.createdAt ?? snapshot.updatedAt;
   const rendererVersion = options.rendererVersion ?? DEFAULT_RENDERER_VERSION;
   const scopeLabel =
     scope.kind === "all" && scope.includeDrafts ? "all-with-drafts" : scope.kind;
   const manifestVersions: ExportManifestVersion[] = versions.map((versionPlan) => ({
-    appId: versionPlan.metadata.appId,
-    appName: versionPlan.metadata.appName,
     versionId: versionPlan.metadata.versionId,
     versionName: versionPlan.metadata.versionName,
     status: versionPlan.metadata.status,
@@ -695,7 +705,7 @@ export async function buildExportPlan(
   }));
   const preflight = { errors, warnings };
   const manifest: ExportManifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     createdAt,
     rendererVersion,
     complete: errors.length === 0,
@@ -707,11 +717,10 @@ export async function buildExportPlan(
       revision: snapshot.revision,
       updatedAt: snapshot.updatedAt,
     },
-    scope: normalized,
+    scope: manifestScope(normalized),
     versions: manifestVersions,
     jobs: jobs.map((job) => ({
       id: job.id,
-      appId: job.appId,
       versionId: job.versionId,
       deckId: job.deckId,
       slideId: job.slideId,

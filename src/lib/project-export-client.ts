@@ -96,7 +96,6 @@ export interface ProjectExportProgress {
   completed: number;
   /** The next planner-owned path to render, or null once every job is rendered. */
   currentFile: string | null;
-  app: ProjectExportCounter;
   version: ProjectExportCounter;
   deck: ProjectExportCounter;
   slide: ProjectExportCounter;
@@ -234,18 +233,15 @@ export function buildProjectExportEntries(
 }
 
 type JobHierarchy = {
-  app: string;
   version: string;
   deck: string;
   slide: string;
 };
 
 function hierarchyFor(exportJob: ExportJob): JobHierarchy {
-  const app = String(exportJob.appId);
-  const version = `${app}\u0000${exportJob.versionId}`;
+  const version = String(exportJob.versionId);
   const deck = `${version}\u0000${exportJob.deckId}`;
   return {
-    app,
     version,
     deck,
     slide: `${deck}\u0000${exportJob.slideId}`,
@@ -287,11 +283,6 @@ export function getProjectExportProgress(
     total: jobs.length,
     completed,
     currentFile: currentJob?.relativePath ?? null,
-    app: counter(
-      orderedUnique(hierarchy.map((item) => item.app)),
-      currentHierarchy?.app,
-      complete,
-    ),
     version: counter(
       orderedUnique(hierarchy.map((item) => item.version)),
       currentHierarchy?.version,

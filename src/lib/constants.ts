@@ -231,6 +231,16 @@ export const THEMES: Record<string, Theme> = {
     accent: "#B8794A",
     muted: "#65736B",
   },
+  "ubulk-dark": {
+    id: "ubulk-dark",
+    name: "UBulk Dark",
+    bg: "#0B0B0F",
+    bgAlt: "#F7F3ED",
+    fg: "#F7F3ED",
+    fgAlt: "#0B0B0F",
+    accent: "#FF7A1A",
+    muted: "#A7A3A0",
+  },
 };
 
 export function themeById(themeId: string | undefined): Theme {

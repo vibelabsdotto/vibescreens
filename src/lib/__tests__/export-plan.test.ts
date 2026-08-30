@@ -214,10 +214,10 @@ describe("buildExportPlan", () => {
       height: 1920,
       slideIndex: 0,
       relativePath:
-        "apps/creme-studio--a1111111/versions/next-release--adraft11/draft/android/android/portrait/de-de/1080x1920/01-draft-11-hero.png",
+        "versions/next-release--adraft11/draft/android/android/portrait/de-de/1080x1920/01-draft-11-hero.png",
     });
     expect(result.manifest).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       createdAt: "2026-08-28T01:02:03.000Z",
       rendererVersion: "test-renderer@1",
       complete: true,
@@ -230,6 +230,9 @@ describe("buildExportPlan", () => {
       projectRevision: 7,
       jobCount: 1,
     });
+    expect(result.manifest.versions[0]).not.toHaveProperty("appId");
+    expect(result.manifest.versions[0]).not.toHaveProperty("appName");
+    expect(result.manifest.jobs[0]).not.toHaveProperty("appId");
   });
 
   it("deduplicates selected versions and sorts them by app/version order, not request order", async () => {
@@ -248,7 +251,7 @@ describe("buildExportPlan", () => {
     ]);
     expect(result.jobs).toHaveLength(9);
     expect(result.jobs[0].relativePath).toBe(
-      "apps/creme-studio--b2222222/versions/launch--bpub2222/published/android/android-7/landscape/fr-fr/1920x1200/01-b-222222-hero.png",
+      "versions/launch--bpub2222/published/android/android-7/landscape/fr-fr/1920x1200/01-b-222222-hero.png",
     );
     expect(result.jobs[1]).toMatchObject({
       appId: appA,
@@ -297,16 +300,16 @@ describe("buildExportPlan", () => {
     );
   });
 
-  it("uses ID suffixes to avoid path collisions when names produce the same slug", async () => {
+  it("uses version ID suffixes to avoid path collisions when names produce the same slug", async () => {
     const result = await plan({ kind: "all" });
-    const appDirectories = new Set(
+    const versionDirectories = new Set(
       result.jobs.map((job) => job.relativePath.split("/").slice(0, 2).join("/")),
     );
 
-    expect(appDirectories).toEqual(
+    expect(versionDirectories).toEqual(
       new Set([
-        "apps/creme-studio--a1111111",
-        "apps/creme-studio--b2222222",
+        "versions/launch--apub1111",
+        "versions/launch--bpub2222",
       ]),
     );
     expect(new Set(result.jobs.map((job) => job.relativePath)).size).toBe(
@@ -351,7 +354,6 @@ describe("buildExportPlan", () => {
     expect(result.preflight.errors).toEqual([
       expect.objectContaining({
         code: "content_hash_mismatch",
-        appId: appB,
         versionId: publishedB,
       }),
     ]);
@@ -452,7 +454,7 @@ describe("buildExportPlan", () => {
     expect(result.jobs).toHaveLength(0);
     expect(result.versions[0].ready).toBe(false);
     expect(result.preflight.errors).toEqual([
-      expect.objectContaining({ code: "missing_asset_file", appId: appB, versionId: publishedB }),
+      expect.objectContaining({ code: "missing_asset_file", versionId: publishedB }),
     ]);
     expect(result.manifest.complete).toBe(false);
   });

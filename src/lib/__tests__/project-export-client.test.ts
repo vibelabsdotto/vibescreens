@@ -58,9 +58,7 @@ function makePlan(overrides: Partial<ExportPlan> = {}): ExportPlan {
       directory: "planner/version-a",
       metadataPath: "planner/version-a/custom-metadata.json",
       metadata: {
-        schemaVersion: 1 as const,
-        appId: jobs[0].appId,
-        appName: "App One",
+        schemaVersion: 2 as const,
         versionId: jobs[0].versionId,
         versionName: "Version One",
         status: "draft" as const,
@@ -80,9 +78,7 @@ function makePlan(overrides: Partial<ExportPlan> = {}): ExportPlan {
       directory: "planner/version-b",
       metadataPath: "planner/version-b/version-from-planner.json",
       metadata: {
-        schemaVersion: 1 as const,
-        appId: jobs[1].appId,
-        appName: "App Two",
+        schemaVersion: 2 as const,
         versionId: jobs[1].versionId,
         versionName: "Version Two",
         status: "published" as const,
@@ -98,8 +94,13 @@ function makePlan(overrides: Partial<ExportPlan> = {}): ExportPlan {
     },
   ];
   const preflight = { errors: [], warnings: [] };
+  const scope = {
+    kind: "selected" as const,
+    versions: versions.map(({ appId, versionId }) => ({ appId, versionId })),
+    deckIds: versions.flatMap((version) => version.deckIds),
+  };
   const manifest = {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     createdAt: "2026-08-28T00:00:00.000Z",
     rendererVersion: "test@1",
     complete: true,
@@ -112,18 +113,17 @@ function makePlan(overrides: Partial<ExportPlan> = {}): ExportPlan {
       updatedAt: "2026-08-28T00:00:00.000Z",
     },
     scope: {
-      kind: "selected" as const,
-      versions: versions.map(({ appId, versionId }) => ({ appId, versionId })),
-      deckIds: versions.flatMap((version) => version.deckIds),
+      kind: scope.kind,
+      versionIds: scope.versions.map(({ versionId }) => versionId),
+      deckIds: scope.deckIds,
     },
     versions: versions.map((version) => ({
       ...version.metadata,
       directory: version.directory,
       metadataPath: version.metadataPath,
     })),
-    jobs: jobs.map(({ id, appId, versionId, deckId, slideId, relativePath }) => ({
+    jobs: jobs.map(({ id, versionId, deckId, slideId, relativePath }) => ({
       id,
-      appId,
       versionId,
       deckId,
       slideId,
@@ -134,7 +134,7 @@ function makePlan(overrides: Partial<ExportPlan> = {}): ExportPlan {
 
   return {
     snapshot: {} as Readonly<ProjectDocumentV3>,
-    scope: manifest.scope,
+    scope,
     versions,
     jobs,
     preflight,
@@ -239,7 +239,6 @@ describe("getProjectExportProgress", () => {
       total: 4,
       completed: 0,
       currentFile: "planner/a-size-1.png",
-      app: { current: 1, total: 2 },
       version: { current: 1, total: 2 },
       deck: { current: 1, total: 2 },
       slide: { current: 1, total: 3 },
@@ -256,7 +255,6 @@ describe("getProjectExportProgress", () => {
     });
     expect(getProjectExportProgress(jobs, 3)).toMatchObject({
       currentFile: "planner/b-slide-1.png",
-      app: { current: 2, total: 2 },
       version: { current: 2, total: 2 },
       deck: { current: 2, total: 2 },
       slide: { current: 3, total: 3 },
@@ -264,7 +262,6 @@ describe("getProjectExportProgress", () => {
     expect(getProjectExportProgress(jobs, 4)).toMatchObject({
       completed: 4,
       currentFile: null,
-      app: { current: 2, total: 2 },
       version: { current: 2, total: 2 },
       deck: { current: 2, total: 2 },
       slide: { current: 3, total: 3 },

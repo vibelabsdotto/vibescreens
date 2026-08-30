@@ -122,9 +122,9 @@ export function ProjectExportDialog({
                 </span>
                 <span className="block text-xs text-muted-foreground">
                   {value === "current"
-                    ? `${app?.name ?? "Unknown app"} · ${version?.name ?? "Unknown version"} · ${version?.status ?? "unknown"}`
+                    ? `${project.name} · ${version?.name ?? "Unknown version"} · ${version?.status ?? "unknown"}`
                     : value === "selected"
-                      ? "Choose exact app/version references below."
+                      ? "Choose exact project versions below."
                       : "Drafts stay excluded unless explicitly included."
                   }
                 </span>
@@ -153,7 +153,7 @@ export function ProjectExportDialog({
                       }
                     />
                     <Label htmlFor={option.id} className="flex flex-1 items-center justify-between gap-3 font-normal">
-                      <span>{option.appName} · {option.versionName}</span>
+                      <span>{project.name} · {option.versionName}</span>
                       <span className="text-xs text-muted-foreground">{option.status}</span>
                     </Label>
                   </div>

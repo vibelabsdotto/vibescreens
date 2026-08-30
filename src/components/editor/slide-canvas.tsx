@@ -774,7 +774,7 @@ function SlideBackground({
         position: "absolute",
         inset: 0,
         overflow: "hidden",
-        background: backgroundFor(theme, inverted),
+        background: backgroundFor(theme, inverted, slide.backgroundColor),
         color: inverted ? theme.fgAlt : theme.fg,
       }}
     >
