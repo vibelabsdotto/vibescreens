@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, realpath } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { storeAsset, type AssetKind, type StoreAssetInput, type StoredAsset } from "./asset-store";
@@ -91,6 +92,8 @@ export interface AssetMigrationWarning {
 export interface MaterializeLegacyAssetsOptions {
   rootDirectory?: string;
   store?: (input: StoreAssetInput) => Promise<StoredAsset>;
+  /** Reject unresolved sources before persisting any asset. */
+  requireAllAssets?: boolean;
 }
 
 export type MaterializedProjectMigration = Omit<
@@ -631,6 +634,33 @@ function localAssetPath(rootDirectory: string, source: string): string | undefin
   return absolute;
 }
 
+async function readLocalAsset(
+  rootDirectory: string,
+  sourcePath: string,
+  byteLimit: number,
+): Promise<Uint8Array | undefined> {
+  const publicRoot = resolve(rootDirectory, "public");
+  let component = publicRoot;
+  for (const segment of ["", ...relative(publicRoot, sourcePath).split(sep)]) {
+    component = join(component, segment);
+    if ((await lstat(component)).isSymbolicLink()) return undefined;
+  }
+  const realPublicRoot = await realpath(publicRoot);
+  const realSourcePath = await realpath(sourcePath);
+  const pathFromRoot = relative(realPublicRoot, realSourcePath);
+  if (pathFromRoot === ".." || pathFromRoot.startsWith(`..${sep}`) || isAbsolute(pathFromRoot)) {
+    return undefined;
+  }
+  const handle = await open(realSourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > byteLimit) return undefined;
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+}
+
 function parseDataUrl(source: string): { bytes: Uint8Array; extension: string } | undefined {
   const match = /^data:([^;,]+)(;base64)?,(.*)$/s.exec(source);
   if (match === null) return undefined;
@@ -685,17 +715,17 @@ export async function materializeLegacyAssets(
   const warnings: Array<MigrationIssue | AssetMigrationWarning> = [
     ...migration.warnings,
   ];
+  const preparedBySource = new Map<string, StoreAssetInput>();
   const storedBySource = new Map<string, StoredAsset>();
 
-  const materialize = async (
+  const prepareAsset = async (
     source: string,
     kind: AssetKind,
     path: string,
   ): Promise<string> => {
     if (source.length === 0 || isScopedAsset(source)) return source;
     const memoKey = `${kind}\u0000${source}`;
-    const memoized = storedBySource.get(memoKey);
-    if (memoized !== undefined) return memoized.url;
+    if (preparedBySource.has(memoKey)) return source;
 
     if (/^(?:https?:|blob:)/i.test(source)) {
       warnings.push({
@@ -707,6 +737,7 @@ export async function materializeLegacyAssets(
       return source;
     }
 
+    const byteLimit = kind === "font" ? MAX_FONT_ASSET_BYTES : MAX_IMAGE_ASSET_BYTES;
     let bytes: Uint8Array;
     let extension: string | undefined;
     if (source.startsWith("data:")) {
@@ -735,7 +766,17 @@ export async function materializeLegacyAssets(
         return source;
       }
       try {
-        bytes = await readFile(sourcePath);
+        const localBytes = await readLocalAsset(rootDirectory, sourcePath, byteLimit);
+        if (localBytes === undefined) {
+          warnings.push({
+            code: "invalid_asset",
+            path,
+            source,
+            message: `Unsafe or oversized asset remains unchanged at ${path}: ${source}`,
+          });
+          return source;
+        }
+        bytes = localBytes;
       } catch (error) {
         if (
           isRecord(error) &&
@@ -765,7 +806,6 @@ export async function materializeLegacyAssets(
       });
       return source;
     }
-    const byteLimit = kind === "font" ? MAX_FONT_ASSET_BYTES : MAX_IMAGE_ASSET_BYTES;
     const validContent = kind === "font"
       ? hasValidFontSignature(bytes, extension as SupportedFontExtension)
       : sniffImageType(Buffer.from(bytes)) === mime;
@@ -781,7 +821,7 @@ export async function materializeLegacyAssets(
     const originalName = source.startsWith("data:")
       ? `inline.${extension}`
       : basename(source.split(/[?#]/, 1)[0]);
-    const stored = await persist({
+    preparedBySource.set(memoKey, {
       rootDir: rootDirectory,
       projectId: document.projectId,
       appId,
@@ -792,10 +832,27 @@ export async function materializeLegacyAssets(
       mime,
       bytes,
     });
+    return source;
+  };
+
+  // Read every source first. A rejected external import must not publish a
+  // valid subset of its assets, and persistence must use these validated bytes.
+  for (const candidate of candidateAssets(document)) {
+    await prepareAsset(candidate.source, candidate.kind, candidate.path);
+  }
+  if (options.requireAllAssets) {
+    const assetWarnings = warnings.filter((warning) => "source" in warning);
+    if (assetWarnings.length > 0) {
+      throw new Error(`External import has unresolved assets: ${assetWarnings.map(({ message }) => message).join("; ")}`);
+    }
+  }
+  for (const [memoKey, input] of preparedBySource) {
+    const stored = await persist(input);
     storedBySource.set(memoKey, stored);
     document.assetsById[stored.id] = stored;
-    return stored.url;
-  };
+  }
+  const materialize = async (source: string, kind: AssetKind, _path: string): Promise<string> =>
+    storedBySource.get(`${kind}\u0000${source}`)?.url ?? source;
 
   for (const deckId of app.versionsById[versionId].deckOrder) {
     const deck = app.versionsById[versionId].decksById[deckId];

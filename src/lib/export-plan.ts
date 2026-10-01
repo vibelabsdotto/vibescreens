@@ -61,6 +61,16 @@ export interface ExportPreflightIssue {
   slideId?: string;
 }
 
+export type ExportContent = "screens" | "device-frames";
+
+export interface DeviceFrameExport {
+  element: "device" | "deviceSecondary";
+  src: string;
+  width: number;
+  height: number;
+  rotation: number;
+}
+
 export interface ExportJob {
   id: string;
   appId: AppId;
@@ -78,6 +88,8 @@ export interface ExportJob {
   slideIndex: number;
   layout: SlideLayout;
   relativePath: string;
+  /** Present only for an isolated, transparent marketing PNG. */
+  deviceFrame?: DeviceFrameExport;
 }
 
 export interface ExportVersionMetadata {
@@ -135,6 +147,7 @@ export interface ExportManifestScope {
 
 export interface ExportManifest {
   schemaVersion: 2;
+  content?: ExportContent;
   createdAt: string;
   rendererVersion: string;
   complete: boolean;
@@ -499,7 +512,8 @@ function versionDirectory(version: VersionRecord): string {
   ].join("/");
 }
 
-function createJobs(
+/** Build jobs for an already-resolved scope; callers own preflight gating. */
+export function createVersionExportJobs(
   resolved: ResolvedVersion,
   directory: string,
 ): ExportJob[] {
@@ -635,7 +649,7 @@ export async function buildExportPlan(
         versionKey({ appId: item.app.id, versionId: item.version.id }),
       ) ?? [];
     const ready = !issues.some((issue) => issue.severity === "error");
-    const versionJobs = ready ? createJobs(item, directory) : [];
+    const versionJobs = ready ? createVersionExportJobs(item, directory) : [];
     for (const job of versionJobs) {
       assertUniquePath(job.relativePath, paths);
       jobs.push(job);

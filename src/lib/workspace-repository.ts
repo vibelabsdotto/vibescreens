@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { storeAsset } from "./asset-store";
 import {
   detectProjectContent,
   materializeLegacyAssets,
@@ -78,6 +79,8 @@ export interface DeleteWorkspaceProjectInput {
 export interface ImportLegacyProjectInput {
   baseRevision: number;
   migratedAt?: string;
+  /** CLI-only external legacy folder. Never accepted from an HTTP body. */
+  sourceDirectory?: string;
 }
 
 export type ImportLegacyProjectResult =
@@ -492,7 +495,7 @@ export function createWorkspaceRepository(
     }
   };
 
-  const findLegacySource = async (): Promise<
+  const findLegacySource = async (sourceDirectory = options.rootDir): Promise<
     | { sourceFile: LegacySourceFile; sourceBytes: string }
     | undefined
   > => {
@@ -505,7 +508,7 @@ export function createWorkspaceRepository(
           sourceFile,
           sourceBytes: await readFile(
             /* turbopackIgnore: true */ join(
-              /* turbopackIgnore: true */ options.rootDir,
+              /* turbopackIgnore: true */ sourceDirectory,
               sourceFile,
             ),
             "utf8",
@@ -708,14 +711,20 @@ export function createWorkspaceRepository(
       return withWorkspaceQueue(store.path, async () => {
         const { workspace } = await readWorkspaceUnsafe();
         assertWorkspaceRevision(workspace, input.baseRevision);
-        if (workspace.projectOrder.length > 0) {
+        if (input.sourceDirectory === undefined && workspace.projectOrder.length > 0) {
           return { status: "not_needed", workspace };
         }
-        const source = await findLegacySource();
+        if (workspace.projectOrder.length >= MAX_PROJECTS) {
+          throw new WorkspaceProjectLimitError();
+        }
+        const source = await findLegacySource(input.sourceDirectory);
         if (source === undefined) return { status: "no_source", workspace };
 
         const parsed = JSON.parse(source.sourceBytes) as unknown;
         const detection = detectProjectContent(parsed);
+        if (input.sourceDirectory !== undefined && detection.kind !== "legacy") {
+          throw new Error("External project import requires a legacy schema (v0, v1, or v2)");
+        }
         if (detection.kind === "unsupported") {
           return {
             status: "unsupported",
@@ -753,11 +762,21 @@ export function createWorkspaceRepository(
           };
         }
 
+        if (input.sourceDirectory !== undefined && store.hasProject(migration.document.projectId)) {
+          throw new ProjectAlreadyExistsError(migration.document.projectId);
+        }
+        if (input.sourceDirectory !== undefined && migration.status === "migrated" &&
+            migration.assets.some(({ source }) => source.startsWith("/vibescreens-assets/"))) {
+          throw new Error("External legacy imports cannot contain managed workspace asset URLs");
+        }
+
         let project: ProjectDocumentV3;
         let warnings: Array<MigrationIssue | AssetMigrationWarning> = [];
         if (migration.status === "migrated") {
           const materialized = await materializeLegacyAssets(migration, {
-            rootDirectory: options.rootDir,
+            rootDirectory: input.sourceDirectory ?? options.rootDir,
+            store: (asset) => storeAsset({ ...asset, rootDir: options.rootDir }),
+            requireAllAssets: input.sourceDirectory !== undefined,
           });
           project = materialized.document;
           warnings = materialized.warnings;

@@ -13,10 +13,9 @@ import {
 } from "@/lib/constants";
 import { nid } from "@/lib/defaults";
 import { imageElementKey, isBuiltInElementId, isImageElementId, isTextElementId, textElementKey } from "@/lib/elements";
-import { preloadImages } from "@/lib/image-cache";
+import { didFail, preloadImages } from "@/lib/image-cache";
 import { resolveScreenshot, writeLocalized } from "@/lib/locale";
-import { applyEditorStateToProjectDocument } from "@/lib/project-editor-adapter";
-import { buildExportPlan, type ExportJob, type ExportPlan, type ExportScope } from "@/lib/export-plan";
+import { buildExportPlan, type ExportContent, type ExportJob, type ExportPlan, type ExportScope } from "@/lib/export-plan";
 import {
   executeProjectExportPlan,
   ProjectExportCancelledError,
@@ -34,6 +33,7 @@ import type {
   SelectedElement,
   Slide,
 } from "@/lib/types";
+import { buildDeviceFrameExportPlan, DeviceFrameCanvas } from "./device-frame-export";
 import { Inspector } from "./inspector";
 import { PreviewStage } from "./preview-stage";
 import { ProjectExportDialog } from "./project-export-dialog";
@@ -70,6 +70,7 @@ export function ScreenshotEditor() {
     workspaceReadOnly,
     migrationStatus,
     flushPendingSave,
+    prepareExportSnapshot,
     reloadLatest,
     reconcileUpload,
     createProject,
@@ -87,6 +88,7 @@ export function ScreenshotEditor() {
   const [selectedElement, setSelectedElement] = React.useState<SelectedElement | null>(null);
   const [ready, setReady] = React.useState(false);
   const [exportDialogOpen, setExportDialogOpen] = React.useState(false);
+  const [exportContent, setExportContent] = React.useState<ExportContent>("screens");
   const [exportPlan, setExportPlan] = React.useState<ExportPlan | null>(null);
   const [exportPlanning, setExportPlanning] = React.useState(false);
   const [exportError, setExportError] = React.useState<string | null>(null);
@@ -96,6 +98,11 @@ export function ScreenshotEditor() {
   const [uploadsInFlight, setUploadsInFlight] = React.useState(0);
   const exportControllerRef = React.useRef<AbortController | null>(null);
   const exportRef = React.useRef<HTMLDivElement | null>(null);
+  const exportReviewGenerationRef = React.useRef(0);
+
+  React.useEffect(() => () => {
+    exportReviewGenerationRef.current += 1;
+  }, [project?.projectId, exportContent]);
 
   const currentSlides = state.slidesByDevice[state.device] || [];
   const activeSlide =
@@ -475,66 +482,50 @@ export function ScreenshotEditor() {
     });
 
   function resetExportReview() {
+    exportReviewGenerationRef.current += 1;
+    setExportPlanning(false);
     setExportPlan(null);
     setExportError(null);
   }
 
   async function prepareProjectExport(scope: ExportScope) {
     if (project === null) return;
+    const requestId = ++exportReviewGenerationRef.current;
+    const projectId = project.projectId;
     setExportPlanning(true);
     setExportError(null);
     setExportPlan(null);
     try {
-      await flushPendingSave();
-      let candidate = structuredClone(project);
-      const { appId, versionId, deckId } = candidate.selection;
-      const selected = candidate.appsById[appId]?.versionsById[versionId];
-      const scopeIncludesSelectedDraft =
-        selected?.status === "draft" &&
-        (scope.kind === "current" ||
-          (scope.kind === "all" && scope.includeDrafts === true) ||
-          (scope.kind === "selected" &&
-            scope.versions.some(
-              (entry) => entry.appId === appId && entry.versionId === versionId,
-            )));
-      if (scopeIncludesSelectedDraft) {
-        const selectedDeck = selected.decksById[deckId];
-        const axesAlreadySelected =
-          selectedDeck.device === state.device &&
-          selectedDeck.orientation === state.orientation &&
-          selectedDeck.locale.trim().normalize("NFKC").toLocaleLowerCase("en-US") ===
-            state.locale.trim().normalize("NFKC").toLocaleLowerCase("en-US");
-        candidate = applyEditorStateToProjectDocument(candidate, state, {
-          now: candidate.updatedAt,
-        });
-        // The adapter deliberately treats an axis change as selection-only. Apply
-        // once more to the cloned candidate so the newly selected draft deck also
-        // receives the latest editor fields without touching the live document.
-        if (!axesAlreadySelected) {
-          candidate = applyEditorStateToProjectDocument(candidate, state, {
-            now: candidate.updatedAt,
-          });
+      const candidate = await prepareExportSnapshot();
+      if (requestId !== exportReviewGenerationRef.current || candidate.projectId !== projectId) return;
+      const assetFileExists = async (url: string) => {
+        try {
+          const response = await fetch(url, { method: "HEAD" });
+          return response.ok;
+        } catch {
+          return false;
+        }
+      };
+      const screenPlan = await buildExportPlan(candidate, scope, {
+        // Device-only exports must not depend on fonts, icons or image overlays.
+        assetFileExists: exportContent === "screens" ? assetFileExists : undefined,
+      });
+      const plan = exportContent === "device-frames" ? buildDeviceFrameExportPlan(screenPlan) : screenPlan;
+      if (exportContent === "device-frames") {
+        const requiredUrls = new Set(plan.jobs.flatMap((job) => exportImageUrls(plan, job)));
+        for (const url of requiredUrls) {
+          if (!url.startsWith("data:") && !(await assetFileExists(url))) {
+            throw new Error(`Device frame asset is unavailable: ${url}`);
+          }
         }
       }
-      setExportPlan(
-        await buildExportPlan(candidate, scope, {
-          // Preflight verifies every managed asset is reachable before jobs
-          // render; a bundle claiming complete:true with blank screenshots was
-          // the exact failure mode this checker prevents.
-          assetFileExists: async (url) => {
-            try {
-              const response = await fetch(url, { method: "HEAD" });
-              return response.ok;
-            } catch {
-              return false;
-            }
-          },
-        }),
-      );
+      if (requestId === exportReviewGenerationRef.current) setExportPlan(plan);
     } catch (caught) {
-      setExportError(caught instanceof Error ? caught.message : String(caught));
+      if (requestId === exportReviewGenerationRef.current) {
+        setExportError(caught instanceof Error ? caught.message : String(caught));
+      }
     } finally {
-      setExportPlanning(false);
+      if (requestId === exportReviewGenerationRef.current) setExportPlanning(false);
     }
   }
 
@@ -543,6 +534,9 @@ export function ScreenshotEditor() {
   }
 
   function exportImageUrls(plan: ExportPlan, job: ExportJob): string[] {
+    if (job.deviceFrame) {
+      return [job.deviceFrame.src, ...(job.device === "iphone" ? ["/mockup.png"] : [])];
+    }
     const urls = new Set<string>(["/mockup.png"]);
     for (const asset of Object.values(plan.snapshot.assetsById)) {
       if (asset.kind !== "font" && asset.url && !asset.url.startsWith("data:")) {
@@ -576,8 +570,12 @@ export function ScreenshotEditor() {
     signal: AbortSignal,
   ) {
     throwIfExportCancelled(signal);
-    await preloadImages(exportImageUrls(plan, job), { retryFailed: true });
+    const imageUrls = exportImageUrls(plan, job);
+    await preloadImages(imageUrls, { retryFailed: true });
     throwIfExportCancelled(signal);
+    if (job.deviceFrame && imageUrls.some(didFail)) {
+      throw new Error("A required device frame image could not be loaded");
+    }
 
     const deck =
       plan.snapshot.appsById[job.appId].versionsById[job.versionId].decksById[
@@ -585,7 +583,7 @@ export function ScreenshotEditor() {
       ];
     setExportFrame({ job, deck });
     await waitForPaint();
-    if (typeof document !== "undefined" && document.fonts?.ready) {
+    if (!job.deviceFrame && typeof document !== "undefined" && document.fonts?.ready) {
       try {
         await document.fonts.ready;
       } catch {
@@ -597,8 +595,14 @@ export function ScreenshotEditor() {
 
     const element = exportRef.current;
     if (element === null) throw new Error("Export render target is unavailable");
-    const { cW, cH } = getCanvas(job.device, job.orientation);
-    const dataUrl = await captureSlide(element, cW, cH, job.width, job.height);
+    if (job.deviceFrame) {
+      await Promise.all(Array.from(element.querySelectorAll("img"), (image) => image.decode()));
+      throwIfExportCancelled(signal);
+    }
+    const { cW, cH } = job.deviceFrame
+      ? { cW: job.width, cH: job.height }
+      : getCanvas(job.device, job.orientation);
+    const dataUrl = await captureSlide(element, cW, cH, job.width, job.height, job.deviceFrame ? "device-frames" : "screens");
     throwIfExportCancelled(signal);
     const response = await fetch(dataUrl);
     const data = await response.blob();
@@ -645,7 +649,9 @@ export function ScreenshotEditor() {
   }
 
   async function startProjectExport() {
-    if (exportPlan === null || exportPlan.preflight.errors.length > 0) return;
+    if (exportPlan === null || exportPlan.preflight.errors.length > 0 ||
+        exportPlan.snapshot.projectId !== project?.projectId ||
+        (exportPlan.manifest.content ?? "screens") !== exportContent) return;
     const controller = new AbortController();
     exportControllerRef.current = controller;
     setExportDialogOpen(false);
@@ -692,6 +698,7 @@ export function ScreenshotEditor() {
     sourceH: number,
     exportW: number,
     exportH: number,
+    content: ExportContent = "screens",
   ) {
     // html-to-image needs the node at (0,0). Let the library scale the source
     // canvas into the requested output dimensions; CSS transforms leave
@@ -718,7 +725,8 @@ export function ScreenshotEditor() {
         canvasHeight: exportH,
         pixelRatio: 1,
         cacheBust: false,
-        backgroundColor: "#ffffff",
+        backgroundColor: content === "device-frames" ? "transparent" : "#ffffff",
+        skipFonts: content === "device-frames",
       });
       return dataUrl;
     } finally {
@@ -736,7 +744,9 @@ export function ScreenshotEditor() {
   const exportCanvas =
     exportFrame === null
       ? null
-      : getCanvas(exportFrame.job.device, exportFrame.job.orientation);
+      : exportFrame.job.deviceFrame
+        ? { cW: exportFrame.job.width, cH: exportFrame.job.height }
+        : getCanvas(exportFrame.job.device, exportFrame.job.orientation);
   const exportTheme =
     exportFrame === null ? null : themeById(exportFrame.deck.themeId);
   const exportFontFamily =
@@ -880,8 +890,9 @@ export function ScreenshotEditor() {
             setOrientation={(value) =>
               setState((previous) => ({ ...previous, orientation: value }))
             }
-            onExport={() => {
+            onExport={(content) => {
               resetExportReview();
+              setExportContent(content);
               setExportDialogOpen(true);
             }}
             onCancelExport={cancelProjectExport}
@@ -1010,8 +1021,12 @@ export function ScreenshotEditor() {
 
           <ProjectExportDialog
             open={exportDialogOpen}
-            onOpenChange={setExportDialogOpen}
+            onOpenChange={(open) => {
+              if (!open) resetExportReview();
+              setExportDialogOpen(open);
+            }}
             project={project}
+            content={exportContent}
             plan={exportPlan}
             planning={exportPlanning}
             error={exportError}
@@ -1042,29 +1057,39 @@ export function ScreenshotEditor() {
                   top: 0,
                 }}
               >
-                <div
-                  style={{
-                    position: "absolute",
-                    left: -exportFrame.job.slideIndex * exportCanvas.cW,
-                    top: 0,
-                    width: exportCanvas.cW * exportFrame.deck.slides.length,
-                    height: exportCanvas.cH,
-                  }}
-                >
-                  <DeckCanvas
-                    slides={exportFrame.deck.slides}
+                {exportFrame.job.deviceFrame ? (
+                  <DeviceFrameCanvas
                     device={exportFrame.job.device}
                     orientation={exportFrame.job.orientation}
-                    theme={exportTheme}
-                    locale={exportFrame.job.locale}
-                    appName={exportFrame.deck.appName}
-                    appIcon={exportFrame.deck.appIcon}
-                    fontFamily={exportFontFamily}
-                    fontFaceCss={exportFontFaceCss}
-                    connectedCanvas={exportFrame.deck.connectedCanvas}
-                    hideEmpty
+                    width={exportFrame.job.width}
+                    height={exportFrame.job.height}
+                    deviceFrame={exportFrame.job.deviceFrame}
                   />
-                </div>
+                ) : (
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: -exportFrame.job.slideIndex * exportCanvas.cW,
+                      top: 0,
+                      width: exportCanvas.cW * exportFrame.deck.slides.length,
+                      height: exportCanvas.cH,
+                    }}
+                  >
+                    <DeckCanvas
+                      slides={exportFrame.deck.slides}
+                      device={exportFrame.job.device}
+                      orientation={exportFrame.job.orientation}
+                      theme={exportTheme}
+                      locale={exportFrame.job.locale}
+                      appName={exportFrame.deck.appName}
+                      appIcon={exportFrame.deck.appIcon}
+                      fontFamily={exportFontFamily}
+                      fontFaceCss={exportFontFaceCss}
+                      connectedCanvas={exportFrame.deck.connectedCanvas}
+                      hideEmpty
+                    />
+                  </div>
+                )}
               </div>
             </div>
           )}

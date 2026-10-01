@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -97,6 +97,84 @@ describe("VibeScreens CLI", () => {
       importResult: { status: "imported" },
       workspace: { projectOrder: [expect.stringMatching(/^prj_/)] },
     });
+  });
+
+  it("imports an external legacy folder into an occupied workspace without changing the source", async () => {
+    const rootDir = await temporaryRoot();
+    const sourceDirectory = await temporaryRoot();
+    await invoke(rootDir, ["project", "create", "--name", "Keep me"]);
+    const service = createWorkspaceProjectService({ rootDir });
+    const before = await service.getWorkspace();
+    const existing = await service.getProject(before.workspace.activeProjectId!);
+    const png = Buffer.from("89504e470d0a1a0a00000000", "hex");
+    await mkdir(join(sourceDirectory, "public"));
+    await writeFile(join(sourceDirectory, "public", "capture.png"), png);
+    const legacy = JSON.stringify({
+      schemaVersion: 2, appName: "Imported App", themeId: "ubulk-dark",
+      connectedCanvas: true, locales: ["en"], locale: "en",
+      device: "iphone", orientation: "portrait", appIcon: "/capture.png",
+      slidesByDevice: { iphone: [{
+        id: "imported-slide", layout: "hero", headline: { en: "Keep this" },
+        screenshot: "/capture.png", imageElements: [{
+          id: "overlay", src: "/capture.png", fit: "contain",
+          transform: { x: 12, y: 34, width: 120, height: 240, rotation: 4, zIndex: 6 },
+        }],
+      }] },
+    });
+    await writeFile(join(sourceDirectory, "app-store-screenshots.json"), legacy);
+
+    const result = await invoke(rootDir, ["project", "import", "--source", sourceDirectory]);
+    expect(result).toMatchObject({ exitCode: 0, stderr: [] });
+    expect(result.stdout[0]).toMatchObject({ importResult: { status: "imported", warnings: [] } });
+    const after = await service.getWorkspace();
+    expect(after.workspace.projectOrder).toHaveLength(2);
+    expect(await service.getProject(existing.projectId)).toEqual(existing);
+    const imported = await service.getProject(after.workspace.activeProjectId!);
+    const app = imported.appsById[imported.selection.appId];
+    const deck = app.versionsById[imported.selection.versionId].decksById[imported.selection.deckId];
+    expect(deck).toMatchObject({ themeId: "ubulk-dark", connectedCanvas: true });
+    expect(deck.slides[0].imageElements?.[0]).toMatchObject({
+      id: "overlay", transform: { x: 12, y: 34, width: 120, height: 240, rotation: 4, zIndex: 6 },
+    });
+    expect(Object.values(imported.assetsById)).toHaveLength(3);
+    for (const asset of Object.values(imported.assetsById)) {
+      expect(await readFile(join(rootDir, "public", asset.url.slice(1)))).toEqual(png);
+    }
+    expect(await readFile(join(rootDir, imported.migration!.backupPath), "utf8")).toBe(legacy);
+    expect(await readFile(join(sourceDirectory, "app-store-screenshots.json"), "utf8")).toBe(legacy);
+    expect((await readdir(sourceDirectory)).sort()).toEqual(["app-store-screenshots.json", "public"]);
+    expect(await readdir(join(sourceDirectory, "public"))).toEqual(["capture.png"]);
+
+    const repeated = await invoke(rootDir, ["project", "import", "--source", sourceDirectory]);
+    expect(repeated.exitCode).toBe(1);
+    expect(await service.getWorkspace()).toEqual(after);
+  });
+
+  it("rejects incomplete external imports without registering a project", async () => {
+    const rootDir = await temporaryRoot();
+    const sourceDirectory = await temporaryRoot();
+    await invoke(rootDir, ["project", "create", "--name", "Keep me"]);
+    const before = await invoke(rootDir, ["workspace", "show"]);
+    await writeFile(join(sourceDirectory, "vibescreens.json"), JSON.stringify({
+      schemaVersion: 2, appName: "Missing assets", locale: "en", locales: ["en"],
+      device: "iphone", slidesByDevice: { iphone: [{ id: "missing", screenshot: "/missing.png" }] },
+    }));
+    const result = await invoke(rootDir, ["project", "import", "--source", sourceDirectory]);
+    expect(result.exitCode).toBe(1);
+    expect(await invoke(rootDir, ["workspace", "show"])).toEqual(before);
+  });
+
+  it("fails external imports with no source or a non-legacy schema", async () => {
+    const rootDir = await temporaryRoot();
+    const sourceDirectory = await temporaryRoot();
+    expect((await invoke(rootDir, ["project", "import"])).exitCode).toBe(2);
+    expect((await invoke(rootDir, ["project", "import", "--source", sourceDirectory])).exitCode).toBe(1);
+    for (const schemaVersion of [3, 4]) {
+      await writeFile(join(sourceDirectory, "vibescreens.json"), JSON.stringify({ schemaVersion }));
+      expect((await invoke(rootDir, ["project", "import", "--source", sourceDirectory])).exitCode).toBe(1);
+    }
+    const result = await invoke(rootDir, ["project", "list"]);
+    expect(result.stdout[0].projects).toEqual([]);
   });
 
   it("creates and inspects projects without exposing revision or document payloads", async () => {

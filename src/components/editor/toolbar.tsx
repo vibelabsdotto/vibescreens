@@ -1,6 +1,6 @@
 "use client";
 import * as React from "react";
-import { AlertTriangle, Check, Cloud, Download, Redo2, RotateCcw, Undo2, UnfoldHorizontal, X } from "lucide-react";
+import { AlertTriangle, Check, Cloud, Redo2, RotateCcw, Undo2, UnfoldHorizontal, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -26,9 +26,11 @@ import {
 } from "@/lib/constants";
 import { detectPlatform } from "@/lib/defaults";
 import type { VersionId } from "@/lib/ids";
+import type { ExportContent } from "@/lib/export-plan";
 import type { ProjectDocumentV3 } from "@/lib/project-schema";
 import type { Device, ImportedFont, Orientation, Platform, ScreenshotFontId } from "@/lib/types";
 import type { ProjectId } from "@/lib/workspace";
+import { ExportBundleButton } from "./export-bundle-button";
 import { FontImporter } from "./font-importer";
 import { getResetDeckActions, getSelectableLocales } from "./toolbar-contract";
 
@@ -54,7 +56,7 @@ type Props = {
   setDevice: (v: Device) => void;
   orientation: Orientation;
   setOrientation: (v: Orientation) => void;
-  onExport: () => void;
+  onExport: (content: ExportContent) => void;
   onCancelExport: () => void;
   onResetDeck: () => void;
   onUndo: () => void;
@@ -301,16 +303,7 @@ export function Toolbar(props: Props) {
             Cancel {props.exporting}
           </Button>
         ) : (
-          <Button
-            type="button"
-            onClick={props.onExport}
-            size="sm"
-            className="h-8"
-            title="Export current, selected, or all project versions as a deterministic zip"
-          >
-            <Download className="h-4 w-4" />
-            Export bundle
-          </Button>
+          <ExportBundleButton onExport={props.onExport} />
         )}
       </div>
 

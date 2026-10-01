@@ -51,6 +51,7 @@ import type {
   TextElement,
 } from "../lib/types";
 import { assertProjectId, type ProjectId } from "../lib/workspace";
+import { createWorkspaceRepository } from "../lib/workspace-repository";
 import { getCanvas, getElementTransform } from "../components/editor/slide-canvas";
 import type { BrowserExportInput, BrowserExportResult } from "./browser-export";
 
@@ -85,6 +86,7 @@ const COMMANDS = [
   "workspace show",
   "workspace import",
   "project list",
+  "project import",
   "project create",
   "project show",
   "project select",
@@ -658,6 +660,27 @@ async function execute(
             warnings: result.importResult.warnings,
           }
         : result.importResult,
+    };
+  }
+
+  if (command === "project import") {
+    validateFlags(parsed.flags, ["source"]);
+    const sourceDirectory = resolve(requiredFlag(parsed.flags, "source"));
+    const snapshot = await service.getWorkspace();
+    const repository = createWorkspaceRepository({ rootDir: parsed.rootDir });
+    const result = await repository.importLegacyProject({
+      baseRevision: snapshot.workspace.revision,
+      sourceDirectory,
+    });
+    if (result.status !== "imported") {
+      throw new Error(`Project import failed: ${JSON.stringify(result)}`);
+    }
+    return {
+      ok: true, command, workspace: result.workspace,
+      importResult: {
+        status: result.status, project: projectSummary(result.project),
+        sourceFile: result.sourceFile, backupPath: result.backupPath, warnings: result.warnings,
+      },
     };
   }
 

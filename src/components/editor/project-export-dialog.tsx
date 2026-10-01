@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import type { ExportPlan, ExportScope } from "@/lib/export-plan";
+import type { ExportContent, ExportPlan, ExportScope } from "@/lib/export-plan";
 import {
   exportVersionOptionId,
   listProjectExportVersionOptions,
@@ -26,6 +26,7 @@ interface ProjectExportDialogProps {
   open: boolean;
   onOpenChange(open: boolean): void;
   project: ProjectDocumentV3;
+  content: ExportContent;
   plan: ExportPlan | null;
   planning: boolean;
   error: string | null;
@@ -44,6 +45,7 @@ export function ProjectExportDialog({
   open,
   onOpenChange,
   project,
+  content,
   plan,
   planning,
   error,
@@ -91,9 +93,11 @@ export function ProjectExportDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Export project bundle</DialogTitle>
+          <DialogTitle>{content === "device-frames" ? "Export device frames" : "Export project bundle"}</DialogTitle>
           <DialogDescription>
-            Build a deterministic ProjectDocumentV3 bundle. Rendering uses a frozen snapshot and never switches the live editor selection.
+            {content === "device-frames"
+              ? "One transparent PNG per device, at its designed size and rotation. No backgrounds, text, icons or image overlays. Devices are exported in full, even when cropped on the canvas. Empty devices and graphic-only slides are skipped."
+              : "Build a deterministic ProjectDocumentV3 bundle. Rendering uses a frozen snapshot and never switches the live editor selection."}
           </DialogDescription>
         </DialogHeader>
 
@@ -229,7 +233,7 @@ export function ProjectExportDialog({
           ) : (
             <Button type="button" disabled={preflightBlocked} onClick={onExport}>
               <Download className="h-4 w-4" aria-hidden />
-              Export bundle
+              {content === "device-frames" ? "Export device frames" : "Export bundle"}
             </Button>
           )}
         </div>

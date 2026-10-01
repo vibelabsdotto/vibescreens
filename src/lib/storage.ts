@@ -441,6 +441,16 @@ export function useProject() {
     if (dirtyRef.current) await performSave();
   }, [performSave]);
 
+  const prepareExportSnapshot = useCallback(async (): Promise<ProjectDocumentV3> => {
+    await flushPendingSave();
+    if (projectRef.current === null) throw new Error("No project is selected.");
+    if (dirtyRef.current || conflictRef.current !== null) {
+      throw new Error("Save or reload the project before preparing an export.");
+    }
+    // Read the accepted save result, not a React closure captured before the save.
+    return structuredClone(projectRef.current);
+  }, [flushPendingSave]);
+
   /**
    * Reconcile a server-side mutation that happened outside the normal editor
    * save path (asset uploads register an asset and bump the durable revision).
@@ -1020,6 +1030,7 @@ export function useProject() {
     workspaceReadOnly: structuralReadOnly,
     migrationStatus,
     flushPendingSave,
+    prepareExportSnapshot,
     reloadLatest,
     reconcileUpload,
 

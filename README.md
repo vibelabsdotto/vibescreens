@@ -29,6 +29,7 @@ Example screenshots generated with this skill were accepted for [Bloom Coffee Sh
 - **Deck controls.** Select one device, orientation, and locale deck inside the active version.
 - **Autosave.** Save the active project with revision checks. `localStorage` is a cache, not the durable source of truth.
 - **Export bundle.** Download a zip with project metadata in `manifest.json` and entries organized by version, status, platform, device, orientation, locale, and resolution.
+- **Device frames only.** Use the arrow beside Export bundle to download transparent marketing PNGs with the complete devices and their screenshots, without store backgrounds, text, icons, or overlays. This mode keeps designed sizes and rotation, exports both devices on a two-device slide, and skips empty devices and feature graphics.
 
 Tip: when capturing source iPhone screenshots, the 6.1-inch simulator is usually the easiest starting point because it reduces manual image adjustment inside the frames.
 
@@ -92,6 +93,7 @@ IDE agents should mutate the workspace through the TypeScript CLI rather than ed
 
 ```bash
 npm run cli -- project list
+npm run cli -- project import --source /path/to/legacy-screenshot-editor
 npm run cli -- project create --name "My App"
 npm run cli -- version create --name "Launch" --locale de
 npm run cli -- deck create --locale ar --device iphone --orientation portrait
@@ -102,7 +104,11 @@ npm run cli -- export bundle --scope current --output ./exports/launch.zip
 npm run cli -- workspace show
 ```
 
+`project import --source /path/to/legacy-editor` adds an external legacy v0-v2 project to an existing workspace. It copies referenced assets into this runtime, keeps the source folder unchanged, and rejects duplicate documents or unresolved assets. It does not overwrite or delete existing projects.
+
 Commands print JSON to stdout, errors to stderr, and return a non-zero exit code on invalid input or domain conflicts. Run `npm run cli -- --help` for the command matrix. The CLI resolves current revisions itself, so callers never write raw project documents or bypass compare-and-swap checks.
+
+The editor server must already be running for `export bundle`. Start it with `npm run dev` from the runtime root and open `http://127.0.0.1:8010`. The CLI never starts another server. Finish pending edits before exporting: the editor freezes the accepted saved revision, and the CLI rejects a ZIP from a different revision or scope. Transparent device-frame exports are currently available in the editor only.
 
 ## Example prompts
 

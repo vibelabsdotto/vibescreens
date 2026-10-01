@@ -402,7 +402,9 @@ export function createWorkspaceProjectService(
         }
         case "importLegacy": {
           assertRevision(command.baseRevision, "baseRevision");
-          const importResult = await workspaceRepository.importLegacyProject(command);
+          const importResult = await workspaceRepository.importLegacyProject({
+            baseRevision: command.baseRevision,
+          });
           const workspace =
             "workspace" in importResult
               ? importResult.workspace
