@@ -93,9 +93,11 @@ export function ProjectExportDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{content === "device-frames" ? "Export device frames" : "Export project bundle"}</DialogTitle>
+          <DialogTitle>{content === "device-frames-with-assets" ? "Export device frames with assets" : content === "device-frames" ? "Export device frames" : "Export project bundle"}</DialogTitle>
           <DialogDescription>
-            {content === "device-frames"
+            {content === "device-frames-with-assets"
+              ? "One transparent PNG per screen at the original canvas size. Includes device frames and image overlays in their designed positions, with rotation, layers and fades preserved. No backgrounds, captions or text elements. Empty devices are skipped; image-only screens are included. Connected screens keep their shared crops."
+              : content === "device-frames"
               ? "One transparent PNG per device, at its designed size and rotation. No backgrounds, text, icons or image overlays. Devices are exported in full, even when cropped on the canvas. Empty devices and graphic-only slides are skipped."
               : "Build a deterministic ProjectDocumentV3 bundle. Rendering uses a frozen snapshot and never switches the live editor selection."}
           </DialogDescription>
@@ -233,7 +235,7 @@ export function ProjectExportDialog({
           ) : (
             <Button type="button" disabled={preflightBlocked} onClick={onExport}>
               <Download className="h-4 w-4" aria-hidden />
-              {content === "device-frames" ? "Export device frames" : "Export bundle"}
+              {content === "device-frames-with-assets" ? "Export frames with assets" : content === "device-frames" ? "Export device frames" : "Export bundle"}
             </Button>
           )}
         </div>

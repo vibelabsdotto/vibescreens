@@ -33,7 +33,7 @@ import type {
   SelectedElement,
   Slide,
 } from "@/lib/types";
-import { buildDeviceFrameExportPlan, DeviceFrameCanvas } from "./device-frame-export";
+import { buildDeviceFrameExportPlan, DeviceFrameCanvas, getDeviceAssetImageUrls } from "./device-frame-export";
 import { Inspector } from "./inspector";
 import { PreviewStage } from "./preview-stage";
 import { ProjectExportDialog } from "./project-export-dialog";
@@ -45,6 +45,7 @@ import { WorkspaceBar } from "./workspace-bar";
 type ExportRenderFrame = {
   job: ExportJob;
   deck: DeckRecord;
+  content: ExportContent;
 };
 
 export function ScreenshotEditor() {
@@ -507,15 +508,15 @@ export function ScreenshotEditor() {
         }
       };
       const screenPlan = await buildExportPlan(candidate, scope, {
-        // Device-only exports must not depend on fonts, icons or image overlays.
+        // Transparent exports check only the images they actually render, not fonts.
         assetFileExists: exportContent === "screens" ? assetFileExists : undefined,
       });
-      const plan = exportContent === "device-frames" ? buildDeviceFrameExportPlan(screenPlan) : screenPlan;
-      if (exportContent === "device-frames") {
+      const plan = exportContent === "screens" ? screenPlan : buildDeviceFrameExportPlan(screenPlan, exportContent);
+      if (exportContent !== "screens") {
         const requiredUrls = new Set(plan.jobs.flatMap((job) => exportImageUrls(plan, job)));
         for (const url of requiredUrls) {
           if (!url.startsWith("data:") && !(await assetFileExists(url))) {
-            throw new Error(`Device frame asset is unavailable: ${url}`);
+            throw new Error(`Export image asset is unavailable: ${url}`);
           }
         }
       }
@@ -536,6 +537,11 @@ export function ScreenshotEditor() {
   function exportImageUrls(plan: ExportPlan, job: ExportJob): string[] {
     if (job.deviceFrame) {
       return [job.deviceFrame.src, ...(job.device === "iphone" ? ["/mockup.png"] : [])];
+    }
+    if (plan.manifest.content === "device-frames-with-assets") {
+      const deck = plan.snapshot.appsById[job.appId].versionsById[job.versionId].decksById[job.deckId];
+      // Connected crops can include an image placed on a neighboring screen.
+      return getDeviceAssetImageUrls(deck.connectedCanvas ? deck : { ...deck, slides: [deck.slides[job.slideIndex]] });
     }
     const urls = new Set<string>(["/mockup.png"]);
     for (const asset of Object.values(plan.snapshot.assetsById)) {
@@ -573,17 +579,18 @@ export function ScreenshotEditor() {
     const imageUrls = exportImageUrls(plan, job);
     await preloadImages(imageUrls, { retryFailed: true });
     throwIfExportCancelled(signal);
-    if (job.deviceFrame && imageUrls.some(didFail)) {
-      throw new Error("A required device frame image could not be loaded");
+    const content = plan.manifest.content ?? "screens";
+    if (content !== "screens" && imageUrls.some(didFail)) {
+      throw new Error("A required export image could not be loaded");
     }
 
     const deck =
       plan.snapshot.appsById[job.appId].versionsById[job.versionId].decksById[
         job.deckId
       ];
-    setExportFrame({ job, deck });
+    setExportFrame({ job, deck, content });
     await waitForPaint();
-    if (!job.deviceFrame && typeof document !== "undefined" && document.fonts?.ready) {
+    if (content === "screens" && typeof document !== "undefined" && document.fonts?.ready) {
       try {
         await document.fonts.ready;
       } catch {
@@ -595,14 +602,14 @@ export function ScreenshotEditor() {
 
     const element = exportRef.current;
     if (element === null) throw new Error("Export render target is unavailable");
-    if (job.deviceFrame) {
+    if (content !== "screens") {
       await Promise.all(Array.from(element.querySelectorAll("img"), (image) => image.decode()));
       throwIfExportCancelled(signal);
     }
     const { cW, cH } = job.deviceFrame
       ? { cW: job.width, cH: job.height }
       : getCanvas(job.device, job.orientation);
-    const dataUrl = await captureSlide(element, cW, cH, job.width, job.height, job.deviceFrame ? "device-frames" : "screens");
+    const dataUrl = await captureSlide(element, cW, cH, job.width, job.height, content);
     throwIfExportCancelled(signal);
     const response = await fetch(dataUrl);
     const data = await response.blob();
@@ -725,8 +732,8 @@ export function ScreenshotEditor() {
         canvasHeight: exportH,
         pixelRatio: 1,
         cacheBust: false,
-        backgroundColor: content === "device-frames" ? "transparent" : "#ffffff",
-        skipFonts: content === "device-frames",
+        backgroundColor: content === "screens" ? "#ffffff" : "transparent",
+        skipFonts: content !== "screens",
       });
       return dataUrl;
     } finally {
@@ -760,6 +767,7 @@ export function ScreenshotEditor() {
   const exportFontFaceCss = exportFrame?.deck.importedFont
     ? `@font-face { font-family: "ImportedScreenshotFont"; src: url("${exportFrame.deck.importedFont.src}") format("${exportFrame.deck.importedFont.format}"); font-display: swap; }`
     : undefined;
+  const isolatedAssetExport = exportFrame?.content === "device-frames-with-assets" && !exportFrame.deck.connectedCanvas;
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
@@ -1069,14 +1077,14 @@ export function ScreenshotEditor() {
                   <div
                     style={{
                       position: "absolute",
-                      left: -exportFrame.job.slideIndex * exportCanvas.cW,
+                      left: isolatedAssetExport ? 0 : -exportFrame.job.slideIndex * exportCanvas.cW,
                       top: 0,
-                      width: exportCanvas.cW * exportFrame.deck.slides.length,
+                      width: exportCanvas.cW * (isolatedAssetExport ? 1 : exportFrame.deck.slides.length),
                       height: exportCanvas.cH,
                     }}
                   >
                     <DeckCanvas
-                      slides={exportFrame.deck.slides}
+                      slides={isolatedAssetExport ? [exportFrame.deck.slides[exportFrame.job.slideIndex]] : exportFrame.deck.slides}
                       device={exportFrame.job.device}
                       orientation={exportFrame.job.orientation}
                       theme={exportTheme}
@@ -1087,6 +1095,7 @@ export function ScreenshotEditor() {
                       fontFaceCss={exportFontFaceCss}
                       connectedCanvas={exportFrame.deck.connectedCanvas}
                       hideEmpty
+                      assetsOnly={exportFrame.content === "device-frames-with-assets"}
                     />
                   </div>
                 )}

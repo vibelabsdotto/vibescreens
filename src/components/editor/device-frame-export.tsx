@@ -1,11 +1,11 @@
 "use client";
 
 import * as React from "react";
-import { createVersionExportJobs, ExportPlanError, type DeviceFrameExport, type ExportJob, type ExportPlan } from "@/lib/export-plan";
+import { createVersionExportJobs, ExportPlanError, type DeviceFrameExport, type ExportContent, type ExportJob, type ExportPlan } from "@/lib/export-plan";
 import { resolveScreenshot } from "@/lib/locale";
 import type { DeckRecord } from "@/lib/project-schema";
 import type { Device, Orientation, Slide } from "@/lib/types";
-import { getElementTransform, getFrameForDevice } from "./slide-canvas";
+import { getCanvas, getElementTransform, getFrameForDevice } from "./slide-canvas";
 
 // Includes the existing frame shadows, including rotated tablets/windows.
 const SHADOW_PADDING = 128;
@@ -38,8 +38,28 @@ export function getDeviceFrameExports(deck: DeckRecord, slide: Slide): FrameOutp
   return frames;
 }
 
+export function getDeviceAssetImageUrls(deck: DeckRecord): string[] {
+  const urls = new Set<string>();
+  for (const slide of deck.slides) {
+    const frames = getDeviceFrameExports(deck, slide);
+    for (const frame of frames) urls.add(frame.deviceFrame.src);
+    if (frames.length > 0 && deck.device === "iphone") urls.add("/mockup.png");
+    for (const image of slide.imageElements ?? []) {
+      if (image.src) urls.add(image.src);
+    }
+    if ((deck.device === "feature-graphic" || slide.layout === "feature-graphic") && deck.appIcon) {
+      urls.add(deck.appIcon);
+    }
+  }
+  return [...urls].sort();
+}
+
 /** Adapt the frozen store plan without changing its snapshot or scope rules. */
-export function buildDeviceFrameExportPlan(plan: ExportPlan): ExportPlan {
+export function buildDeviceFrameExportPlan(
+  plan: ExportPlan,
+  content: Exclude<ExportContent, "screens"> = "device-frames",
+): ExportPlan {
+  const withAssets = content === "device-frames-with-assets";
   const seenSlides = new Set<string>();
   const paths = new Set<string>();
   const jobs: ExportJob[] = [];
@@ -61,15 +81,29 @@ export function buildDeviceFrameExportPlan(plan: ExportPlan): ExportPlan {
     const parts = job.relativePath.split("/");
     const filename = parts.pop()!;
     parts.pop(); // Replace the store-size directory with a marketing directory.
-    for (const frame of getDeviceFrameExports(deck, slide)) {
-      const relativePath = [...parts, "device-frames", filename.replace(/\.png$/, `-${frame.deviceFrame.element}.png`)].join("/");
+    const frames = getDeviceFrameExports(deck, slide);
+    const hasAssets = frames.length > 0 || slide.imageElements?.some((image) => image.src) ||
+      ((deck.device === "feature-graphic" || slide.layout === "feature-graphic") && deck.appIcon);
+    const { cW, cH } = getCanvas(deck.device, deck.orientation);
+    const outputs = withAssets
+      ? (hasAssets || (deck.connectedCanvas && getDeviceAssetImageUrls(deck).length > 0)
+        ? [{ width: cW, height: cH, deviceFrame: undefined }]
+        : [])
+      : frames;
+    for (const frame of outputs) {
+      const outputFilename = frame.deviceFrame
+        ? filename.replace(/\.png$/, `-${frame.deviceFrame.element}.png`)
+        : filename;
+      const relativePath = [...parts, content, outputFilename].join("/");
       if (paths.has(relativePath)) throw new ExportPlanError("path_collision", `Duplicate device export path ${relativePath}`);
       paths.add(relativePath);
-      jobs.push(Object.freeze({ ...job, ...frame, id: relativePath, relativePath, sizeLabel: "Device frame" }));
+      jobs.push(Object.freeze({ ...job, ...frame, id: relativePath, relativePath, sizeLabel: withAssets ? "Device frames with assets" : "Device frame" }));
     }
   }
   if (jobs.length === 0) {
-    throw new ExportPlanError("empty_scope", "No device screenshots in the selected versions. Empty devices and graphic-only slides are skipped.");
+    throw new ExportPlanError("empty_scope", withAssets
+      ? "No device screenshots or image assets in the selected versions."
+      : "No device screenshots in the selected versions. Empty devices and graphic-only slides are skipped.");
   }
 
   // Empty devices are intentionally omitted, never rendered as placeholders.
@@ -97,8 +131,8 @@ export function buildDeviceFrameExportPlan(plan: ExportPlan): ExportPlan {
     preflight,
     manifest: Object.freeze({
       ...plan.manifest,
-      content: "device-frames" as const,
-      bundleName: plan.manifest.bundleName.replace(/^vibescreens-/, "vibescreens-device-frames-"),
+      content,
+      bundleName: plan.manifest.bundleName.replace(/^vibescreens-/, `vibescreens-${content}-`),
       plannedJobCount: jobs.length,
       complete: preflight.errors.length === 0,
       preflight,

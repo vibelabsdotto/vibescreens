@@ -30,6 +30,7 @@ Example screenshots generated with this skill were accepted for [Bloom Coffee Sh
 - **Autosave.** Save the active project with revision checks. `localStorage` is a cache, not the durable source of truth.
 - **Export bundle.** Download a zip with project metadata in `manifest.json` and entries organized by version, status, platform, device, orientation, locale, and resolution.
 - **Device frames only.** Use the arrow beside Export bundle to download transparent marketing PNGs with the complete devices and their screenshots, without store backgrounds, text, icons, or overlays. This mode keeps designed sizes and rotation, exports both devices on a two-device slide, and skips empty devices and feature graphics.
+- **Device Frames with assets.** Use the same menu to export one transparent PNG per screen at its original canvas size. Keeps device frames and image overlays in their designed positions, including rotation, layering, fades, and connected-screen crops. Omits backgrounds, captions, and text elements. Image-only screens are included; text already baked into an image remains part of that image.
 
 Tip: when capturing source iPhone screenshots, the 6.1-inch simulator is usually the easiest starting point because it reduces manual image adjustment inside the frames.
 

@@ -61,7 +61,7 @@ export interface ExportPreflightIssue {
   slideId?: string;
 }
 
-export type ExportContent = "screens" | "device-frames";
+export type ExportContent = "screens" | "device-frames" | "device-frames-with-assets";
 
 export interface DeviceFrameExport {
   element: "device" | "deviceSecondary";

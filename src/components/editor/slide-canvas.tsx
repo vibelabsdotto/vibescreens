@@ -158,6 +158,8 @@ type DeckCanvasProps = {
   previewScale?: number;
   hideEmpty?: boolean;
   showGuides?: boolean;
+  /** Transparent export of devices and images only, preserving the deck layout. */
+  assetsOnly?: boolean;
 };
 
 // ---------- Editable text helpers ----------
@@ -624,6 +626,7 @@ export function DeckCanvas({
   previewScale = 1,
   hideEmpty,
   showGuides = false,
+  assetsOnly = false,
 }: DeckCanvasProps) {
   const { cW, cH } = getCanvas(device, orientation);
   const totalW = Math.max(1, slides.length) * cW;
@@ -638,7 +641,7 @@ export function DeckCanvas({
         fontFamily,
       }}
     >
-      {fontFaceCss && <style>{fontFaceCss}</style>}
+      {!assetsOnly && fontFaceCss && <style>{fontFaceCss}</style>}
       {slides.map((slide, index) => {
         const screenX = index * cW;
         const active = activeSlideId === slide.id;
@@ -667,6 +670,7 @@ export function DeckCanvas({
                 locale={locale}
                 appName={appName}
                 appIcon={appIcon}
+                assetsOnly={assetsOnly}
                 editable={editable}
                 edit={{
                   onHeadlineChange: (v) => edit?.onHeadlineChange?.(slide.id, v),
@@ -693,14 +697,14 @@ export function DeckCanvas({
               overflow: "hidden",
             }}
           >
-            <SlideBackground slide={slide} cW={cW} cH={cH} theme={theme} />
+            {!assetsOnly && <SlideBackground slide={slide} cW={cW} cH={cH} theme={theme} />}
             {showGuides && <ScreenGuide cW={cW} cH={cH} index={index} active={active} />}
           </div>
         );
       })}
 
       {slides.map((slide, index) => {
-        if (slide.layout === "feature-graphic" || device === "feature-graphic") return null;
+        if (!assetsOnly && (slide.layout === "feature-graphic" || device === "feature-graphic")) return null;
         const selectedElementId =
           selectedElement?.slideId === slide.id ? selectedElement.elementId : null;
         const perSlideEdit: EditHandlers | undefined = editable
@@ -729,6 +733,7 @@ export function DeckCanvas({
             selectedElementId={selectedElementId}
             previewScale={previewScale}
             hideEmpty={hideEmpty}
+            assetsOnly={assetsOnly}
             screenX={connectedCanvas ? index * cW : 0}
             boundsW={connectedCanvas ? totalW : cW}
             boundsH={cH}
@@ -841,6 +846,7 @@ function FeatureGraphicCanvas({
   appIcon,
   editable,
   edit,
+  assetsOnly = false,
 }: {
   slide: Slide;
   cW: number;
@@ -850,6 +856,7 @@ function FeatureGraphicCanvas({
   appIcon?: string;
   editable?: boolean;
   edit?: EditHandlers;
+  assetsOnly?: boolean;
 }) {
   const { headlineScale, appNameScale } = slideFontScales(slide);
   return (
@@ -859,14 +866,14 @@ function FeatureGraphicCanvas({
         height: "100%",
         position: "relative",
         overflow: "hidden",
-        background: `linear-gradient(135deg, ${theme.bgAlt} 0%, ${shade(theme.bgAlt, -10)} 50%, ${theme.accent} 200%)`,
+        background: assetsOnly ? "transparent" : `linear-gradient(135deg, ${theme.bgAlt} 0%, ${shade(theme.bgAlt, -10)} 50%, ${theme.accent} 200%)`,
         display: "flex",
         alignItems: "center",
         padding: `0 ${cW * 0.06}px`,
         color: theme.fgAlt,
       }}
     >
-      <Blob cW={cW} color={theme.accent} x={70} y={20} size={50} opacity={0.45} />
+      {!assetsOnly && <Blob cW={cW} color={theme.accent} x={70} y={20} size={50} opacity={0.45} />}
       <div style={{ display: "flex", alignItems: "center", gap: cW * 0.03, zIndex: 2 }}>
         {appIcon && img(appIcon) ? (
           <img
@@ -880,7 +887,7 @@ function FeatureGraphicCanvas({
             }}
             draggable={false}
           />
-        ) : (
+        ) : !assetsOnly ? (
           <div
             aria-hidden
             style={{
@@ -899,8 +906,8 @@ function FeatureGraphicCanvas({
           >
             {(appName || "A").slice(0, 1).toUpperCase()}
           </div>
-        )}
-        <div>
+        ) : null}
+        {!assetsOnly && <div>
           <div style={{ fontSize: cW * 0.06 * appNameScale, fontWeight: 800, lineHeight: 1.05 }}>{appName || "App"}</div>
           <EditableText
             value={pickText(slide.headline, locale)}
@@ -914,7 +921,7 @@ function FeatureGraphicCanvas({
               lineHeight: 1.25,
             }}
           />
-        </div>
+        </div>}
       </div>
     </div>
   );
@@ -935,6 +942,7 @@ function SlideElements({
   boundsW,
   boundsH,
   allowCrossScreen,
+  assetsOnly = false,
 }: {
   slide: Slide;
   device: Device;
@@ -950,14 +958,16 @@ function SlideElements({
   boundsW: number;
   boundsH: number;
   allowCrossScreen: boolean;
+  assetsOnly?: boolean;
 }) {
   const screenshot = resolveScreenshot(slide.screenshot, locale);
   const screenshotSecondary = resolveScreenshot(slide.screenshotSecondary, locale);
   const { cW, cH, Frame, frameAspect, defaults } = getSlideGeometry(slide, device, orientation);
   const inverted = !!slide.inverted;
   const captionRect = rectFor("caption", slide, defaults);
-  const deviceRect = rectFor("device", slide, defaults);
-  const secondaryRect = rectFor("deviceSecondary", slide, defaults);
+  const graphicOnly = device === "feature-graphic" || slide.layout === "feature-graphic";
+  const deviceRect = assetsOnly && graphicOnly ? undefined : rectFor("device", slide, defaults);
+  const secondaryRect = assetsOnly && graphicOnly ? undefined : rectFor("deviceSecondary", slide, defaults);
 
   function toGlobal(rect: Rect): Rect {
     return { ...rect, x: rect.x + screenX };
@@ -1150,17 +1160,17 @@ function SlideElements({
 
   return (
     <>
-      {secondaryRect &&
+      {secondaryRect && (!assetsOnly || screenshotSecondary || screenshot) &&
         renderDevice(
           "deviceSecondary",
           secondaryRect,
           screenshotSecondary || screenshot,
           { opacity: 0.85 },
         )}
-      {deviceRect && renderDevice("device", deviceRect, screenshot)}
-      {renderCaption()}
-      {(slide.textElements || []).map(renderTextElement)}
-      {(slide.imageElements || []).map(renderImageElement)}
+      {deviceRect && (!assetsOnly || screenshot) && renderDevice("device", deviceRect, screenshot)}
+      {!assetsOnly && renderCaption()}
+      {!assetsOnly && (slide.textElements || []).map(renderTextElement)}
+      {(slide.imageElements || []).filter((image) => !assetsOnly || image.src).map(renderImageElement)}
     </>
   );
 }
